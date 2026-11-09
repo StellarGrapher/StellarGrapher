@@ -57,7 +57,15 @@ The live cursor is a single row (`id = 1`) tracking the last processed ledger an
 
 ## Tables
 
-### `indexer_cursor`
+Prisma names each table after its model, so the names are PascalCase. Postgres folds unquoted names to lower case, so quote them in SQL:
+
+```sql
+SELECT "contractId", "functionName", "ledger" FROM "Invocation" ORDER BY "ledger" DESC LIMIT 10;
+```
+
+Column names are camelCase and need quoting the same way.
+
+### `"IndexerCursor"`
 Singleton row (id always 1) tracking how far the indexer has processed.
 
 | Column      | Type     | Description                    |
@@ -66,7 +74,7 @@ Singleton row (id always 1) tracking how far the indexer has processed.
 | `paginationCursor` | `String?` | RPC page position when a ledger has more transactions |
 | `updatedAt`  | `DateTime` | Last cursor advance time     |
 
-### `invocations`
+### `"Invocation"`
 One row per Soroban contract function invocation.
 
 | Column         | Type      | Description                           |
@@ -80,7 +88,7 @@ One row per Soroban contract function invocation.
 | `sourceAccount`| `String`  | Transaction source account            |
 | `returnValue`  | `String?` | Decoded return value for a successful invocation |
 
-### `contracts`
+### `"Contract"`
 One row per observed contract deployment.
 
 | Column             | Type     | Description                         |
@@ -90,10 +98,19 @@ One row per observed contract deployment.
 | `deploymentLedger` | `Int`    | Ledger sequence of the deployment   |
 | `deploymentTxHash` | `String` | Transaction that deployed the contract |
 
-### `backfill_cursor`
-Singleton row tracking the active (or most recently completed) fixed-range backfill, including its RPC pagination cursor.
+### `"BackfillCursor"`
+Singleton row (id always 1) tracking the active (or most recently completed) fixed-range backfill, including its RPC pagination cursor.
 
-### `storage_changes`
+| Column             | Type       | Description                                           |
+| ------------------ | ---------- | ----------------------------------------------------- |
+| `fromLedger`       | `Int`      | First ledger of the backfill range                    |
+| `toLedger`         | `Int`      | Last ledger of the backfill range                     |
+| `lastLedger`       | `Int`      | Last ledger the backfill has processed                |
+| `paginationCursor` | `String?`  | RPC page position when a ledger has more transactions |
+| `completed`        | `Boolean`  | Whether the backfill has finished (default `false`)   |
+| `updatedAt`        | `DateTime` | Last cursor advance time                              |
+
+### `"StorageChange"`
 Append-only log of every observed change to a contract storage entry. The "current value" for a key is its most recent non-removed row — this is what makes full key enumeration possible.
 
 | Column        | Type     | Description                                      |
@@ -106,7 +123,7 @@ Append-only log of every observed change to a contract storage entry. The "curre
 | `ledger`      | `Int`    | Ledger sequence number                           |
 | `txHash`      | `String` | Transaction hash                                 |
 
-### `contract_event_records`
+### `"ContractEventRecord"`
 One row per contract event emitted.
 
 | Column       | Type     | Description                    |
@@ -117,7 +134,7 @@ One row per contract event emitted.
 | `topic`      | `Json`   | Event topics                   |
 | `value`      | `String` | Event value (decoded)          |
 
-### `indexer_gaps`
+### `"IndexerGap"`
 One row per ledger range the live indexer skipped without indexing, because the RPC node's retention window had already passed the cursor. Gaps apply to every contract. The frontend returns them as `historyGaps` from `GET /api/contract/{id}`.
 
 | Column        | Type     | Description                          |
