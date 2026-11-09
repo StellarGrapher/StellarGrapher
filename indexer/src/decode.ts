@@ -17,6 +17,34 @@ function toDisplaySafe(value: unknown): unknown {
   return value;
 }
 
+/** Pairs of display-safe map entries, or an object when every key is a distinct string. */
+function mapEntriesToDisplay(entries: [unknown, unknown][]): unknown {
+  // scValToNative flattens map keys with String(), so a Vec key ["a","b"] and
+  // the string "a,b" collide and Address/struct keys become "[object Object]".
+  // Stringify non-string keys as JSON instead, and keep every entry as a
+  // [key, value] pair if two keys still end up the same.
+  const keys = entries.map(([k]) => (typeof k === "string" ? k : JSON.stringify(k)));
+  if (new Set(keys).size !== keys.length) return entries;
+  return Object.fromEntries(entries.map(([, v], i) => [keys[i], v]));
+}
+
+function scValToDisplaySafe(val: xdr.ScVal): unknown {
+  const name = val.switch().name;
+  if (name === "scvMap") {
+    const map = val.map();
+    if (map) {
+      return mapEntriesToDisplay(
+        map.map((e) => [scValToDisplaySafe(e.key()), scValToDisplaySafe(e.val())])
+      );
+    }
+  }
+  if (name === "scvVec") {
+    const vec = val.vec();
+    if (vec) return vec.map(scValToDisplaySafe);
+  }
+  return toDisplaySafe(scValToNative(val));
+}
+
 /** Decode an ScVal to a compact display string. Mirrors frontend/src/lib/xdr.ts's scValToDisplay. */
 export function scValToDisplay(val: xdr.ScVal): string {
   const switchName = val.switch().name;
@@ -28,7 +56,7 @@ export function scValToDisplay(val: xdr.ScVal): string {
   // instance value should read it via .instance() instead of this function.
   if (switchName === "scvContractInstance") return "(contract instance)";
   try {
-    const decoded = toDisplaySafe(scValToNative(val));
+    const decoded = scValToDisplaySafe(val);
     return typeof decoded === "string" ? decoded : JSON.stringify(decoded);
   } catch {
     return "(unrepresentable value)";

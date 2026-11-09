@@ -49,6 +49,29 @@ describe("scValToDisplay", () => {
     expect(scValToDisplay(vec)).toBe("[1,2]");
   });
 
+  it("keeps map entries whose keys flatten to the same string", () => {
+    const entry = (key: xdr.ScVal, val: number) =>
+      new xdr.ScMapEntry({ key, val: xdr.ScVal.scvU32(val) });
+    const map = xdr.ScVal.scvMap([
+      entry(xdr.ScVal.scvVec([xdr.ScVal.scvString("a"), xdr.ScVal.scvString("b")]), 1),
+      entry(xdr.ScVal.scvString("a,b"), 2),
+    ]);
+    expect(JSON.parse(scValToDisplay(map))).toEqual({ '["a","b"]': 1, "a,b": 2 });
+  });
+
+  it("falls back to key/value pairs when map keys still collide", () => {
+    const entry = (key: xdr.ScVal, val: number) =>
+      new xdr.ScMapEntry({ key, val: xdr.ScVal.scvU32(val) });
+    const map = xdr.ScVal.scvMap([
+      entry(xdr.ScVal.scvVec([xdr.ScVal.scvString("a")]), 1),
+      entry(xdr.ScVal.scvString('["a"]'), 2),
+    ]);
+    expect(JSON.parse(scValToDisplay(map))).toEqual([
+      [["a"], 1],
+      ['["a"]', 2],
+    ]);
+  });
+
   it("decodes a u128 to a string (bigints aren't JSON-safe)", () => {
     const val = xdr.ScVal.scvU128(
       new xdr.UInt128Parts({ hi: xdr.Uint64.fromString("0"), lo: xdr.Uint64.fromString("1000") })

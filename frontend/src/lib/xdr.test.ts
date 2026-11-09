@@ -55,6 +55,29 @@ describe("decodeScVal / scValToDisplay", () => {
     const vec = xdr.ScVal.scvVec([xdr.ScVal.scvU32(1), xdr.ScVal.scvU32(2)]);
     expect(scValToDisplay(vec)).toBe("[1,2]");
   });
+
+  it("keeps map entries whose keys flatten to the same string", () => {
+    const entry = (key: xdr.ScVal, val: number) =>
+      new xdr.ScMapEntry({ key, val: xdr.ScVal.scvU32(val) });
+    const map = xdr.ScVal.scvMap([
+      entry(xdr.ScVal.scvVec([xdr.ScVal.scvString("a"), xdr.ScVal.scvString("b")]), 1),
+      entry(xdr.ScVal.scvString("a,b"), 2),
+    ]);
+    expect(JSON.parse(scValToDisplay(map))).toEqual({ '["a","b"]': 1, "a,b": 2 });
+  });
+
+  it("falls back to key/value pairs when map keys still collide", () => {
+    const entry = (key: xdr.ScVal, val: number) =>
+      new xdr.ScMapEntry({ key, val: xdr.ScVal.scvU32(val) });
+    const map = xdr.ScVal.scvMap([
+      entry(xdr.ScVal.scvVec([xdr.ScVal.scvString("a")]), 1),
+      entry(xdr.ScVal.scvString('["a"]'), 2),
+    ]);
+    expect(JSON.parse(scValToDisplay(map))).toEqual([
+      [["a"], 1],
+      ['["a"]', 2],
+    ]);
+  });
 });
 
 describe("decodeXdr / decodeScValXdr (base64 round-trip)", () => {
