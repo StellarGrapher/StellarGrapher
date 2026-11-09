@@ -157,8 +157,8 @@ export default async function TxPage({ params }: Props) {
           <h2 className="text-lg font-semibold mb-1">
             Soroban Invocation <span className="text-sm font-mono text-prism-muted">operation #{invocation.operationIndex}</span>
           </h2>
-          <Row label="Contract" value={invocation.contractId} mono link={`/contract/${invocation.contractId}`} />
-          <Row label="Function" value={invocation.functionName} mono />
+          <DetailRow label="Contract" value={invocation.contractId} mono link={`/contract/${invocation.contractId}`} />
+          <DetailRow label="Function" value={invocation.functionName} mono />
           {invocation.args.length > 0 && (
             <div className="border-b border-prism-border pb-3">
               <p className="text-prism-muted text-sm mb-2">Arguments</p>
@@ -172,7 +172,7 @@ export default async function TxPage({ params }: Props) {
             </div>
           )}
           {/* Return value and resource usage describe the whole transaction, so they appear once, under the first call. */}
-          {i === 0 && returnValue !== null && <Row label="Return Value" value={returnValue} mono />}
+          {i === 0 && returnValue !== null && <DetailRow label="Return Value" value={returnValue} mono />}
           {i === 0 && resources && (
             <>
               <DetailRow label="CPU Instructions" value={formatNumber(resources.instructions)} />
