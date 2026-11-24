@@ -8,6 +8,7 @@ import InvokeTool from "@/components/InvokeTool";
 import LiveEventLog from "@/components/LiveEventLog";
 import CopyButton from "@/components/CopyButton";
 import SectionHeader from "@/components/SectionHeader";
+import BookmarkButton from "@/components/BookmarkButton";
 import { EVENT_PAGE_SIZE, INVOCATION_PAGE_SIZE } from "@/lib/contract-lists";
 
 export const dynamic = "force-dynamic";
@@ -48,6 +49,7 @@ export default async function ContractPage({ params }: Props) {
       <div className="flex items-start gap-2 mb-8">
         <p className="text-prism-muted font-mono text-sm break-all">{contractId}</p>
         <CopyButton value={contractId} what="contract ID" />
+        <BookmarkButton contractId={contractId} />
       </div>
 
       <div className="grid grid-cols-1 gap-8">
