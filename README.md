@@ -152,3 +152,8 @@ Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to g
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+## Handsoff notes
+
+<!-- handsoff-issue-2 -->
+- #2: feat(frontend): Implement contract search autocomplete with recent searches
