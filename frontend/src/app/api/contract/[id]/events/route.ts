@@ -17,7 +17,12 @@ export async function GET(req: Request, { params }: Params) {
 
   const { items, nextCursor, error } = await getContractEventsPage(params.id, request);
   if (error) {
-    return NextResponse.json({ events: [], nextCursor: null, error }, { status: 502 });
+    // Without the indexer we still return whatever page we could load so the
+    // table can paginate; surface the error alongside the partial results.
+    return NextResponse.json(
+      { events: items ?? [], nextCursor: nextCursor ?? null, error },
+      { status: 502 },
+    );
   }
   return NextResponse.json({ events: items, nextCursor, error: null });
 }

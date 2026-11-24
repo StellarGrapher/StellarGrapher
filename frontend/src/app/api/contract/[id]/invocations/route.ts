@@ -15,6 +15,14 @@ export async function GET(req: Request, { params }: Params) {
   const request = parsePageRequest(new URL(req.url), INVOCATION_PAGE_SIZE);
   if (!request) return NextResponse.json({ error: "Invalid cursor" }, { status: 400 });
 
-  const { items, nextCursor } = await getInvocationHistoryPage(params.id, request);
-  return NextResponse.json({ invocations: items, nextCursor });
+  try {
+    const { items, nextCursor } = await getInvocationHistoryPage(params.id, request);
+    return NextResponse.json({ invocations: items, nextCursor });
+  } catch (err) {
+    // Without the indexer running, the history source may be unavailable.
+    // Return an empty page (no cursor) so the table degrades gracefully
+    // instead of surfacing a hard error to the paginated UI.
+    console.error("Failed to load invocation history page", err);
+    return NextResponse.json({ invocations: [], nextCursor: null });
+  }
 }
