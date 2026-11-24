@@ -98,6 +98,7 @@ export default async function ContractPage({ params }: Props) {
             rpcFallback={rpcFallback}
             specs={wasm?.events}
             title="Events"
+            exportable
           />
         </section>
       </div>
