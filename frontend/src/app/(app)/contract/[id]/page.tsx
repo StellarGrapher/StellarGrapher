@@ -96,6 +96,7 @@ export default async function ContractPage({ params }: Props) {
             rpcFallback={rpcFallback}
             specs={wasm?.events}
             title="Events"
+            sortableColumns={["ledger", "timestamp", "topic"]}
           />
         </section>
       </div>
