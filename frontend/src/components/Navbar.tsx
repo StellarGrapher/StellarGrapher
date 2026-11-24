@@ -1,6 +1,7 @@
 import Link from "next/link";
 import SearchBar from "./SearchBar";
 import NavLinks from "./NavLinks";
+import ShortcutsHint from "./ShortcutsHint";
 import { config, type StellarNetwork } from "@/lib/config";
 
 /**
@@ -33,7 +34,7 @@ export default function Navbar() {
         <div className="flex-1 min-w-0 w-full sm:w-auto order-last sm:order-none">
           <SearchBar />
         </div>
-        <div className="flex gap-5 text-sm text-prism-muted shrink-0">
+        <div className="flex gap-5 text-sm text-prism-muted shrink-0 items-center">
           <Link href="/explorer" className="hover:text-prism-strong transition">Home</Link>
           <Link href="/xdr" className="hover:text-prism-strong transition">XDR</Link>
           <Link href="/docs" className="hover:text-prism-strong transition">API</Link>
@@ -45,6 +46,7 @@ export default function Navbar() {
           >
             GitHub
           </a>
+          <ShortcutsHint />
         </div>
       </div>
     </nav>
