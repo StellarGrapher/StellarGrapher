@@ -124,3 +124,18 @@ model TokenEvent {
   @@index([to, ledger])
   @@index([tokenContractId, ledger])
 }
+
+// A webhook delivery that exhausted its retries. Kept so a failed batch can be
+// inspected and replayed instead of being silently dropped.
+model WebhookDeadLetter {
+  id          String   @id @default(cuid())
+  url         String
+  payload     String // the exact signed request body
+  signature   String // HMAC-SHA256 hex digest sent in the signature header
+  attempts    Int
+  lastError   String
+  eventCount  Int
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}
