@@ -93,6 +93,10 @@ model ContractEventRecord {
   type       String
   topic      Json
   value      String
+  // Set only for `contract_created` events.
+  deployer   String?
+  salt       String?
+  wasmHash   String?
   txHash     String
   ledger     Int
   createdAt  DateTime

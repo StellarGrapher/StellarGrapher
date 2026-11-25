@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
 import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
 import {
+  contractCreatedEvent,
   decodeContractCreation,
   decodeInvocation,
   extractEvents,
@@ -213,8 +214,9 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
     metricRowsWritten.inc({ table: "invocation" }, invocationResult.count);
   }
 
+  let contract: ReturnType<typeof decodeContractCreation> = null;
   if (tx.status === "SUCCESS" && sourceAccount) {
-    const contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
+    contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
     if (contract) {
       const contractResult = await db.contract.createMany({
         data: [
@@ -251,6 +253,7 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
   }
 
   const events = extractEvents(tx.resultMetaXdr, tx.txHash);
+  if (contract) events.push(contractCreatedEvent(contract, tx.txHash));
   if (events.length > 0) {
     const eventsResult = await db.contractEventRecord.createMany({
       skipDuplicates: true,
@@ -260,6 +263,9 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
         type: e.type,
         topic: e.topic,
         value: e.value,
+        deployer: e.deployer ?? null,
+        salt: e.salt ?? null,
+        wasmHash: e.wasmHash ?? null,
         txHash: tx.txHash,
         ledger: tx.ledger,
         createdAt,
