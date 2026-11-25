@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "e2e": "playwright test"
   },
   "engines": {
@@ -36,6 +37,7 @@
     "@types/pg": "^8.11.0",
     "@types/react": "^18.0.0",
     "@typescript-eslint/eslint-plugin": "^8.66.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "autoprefixer": "^10.4.27",
     "eslint": "^8.57.1",
     "eslint-config-next": "^14.2.35",
