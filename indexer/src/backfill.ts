@@ -1,5 +1,5 @@
 import { prisma, getBackfillCursor, setBackfillCursor } from "./db.js";
-import { PAGE_LIMIT, processTransaction, server } from "./index.js";
+import { PAGE_LIMIT, processTransaction, server, failover } from "./index.js";
 
 export async function backfill(fromLedger: number, toLedger: number): Promise<void> {
   if (!Number.isSafeInteger(fromLedger) || fromLedger < 1) {
@@ -22,6 +22,7 @@ export async function backfill(fromLedger: number, toLedger: number): Promise<vo
           startLedger: Math.max(fromLedger, state.lastLedger + 1),
           pagination: { limit: PAGE_LIMIT },
         });
+    failover.recordSuccess();
 
     let lastLedger = state.lastLedger;
     let reachedEnd = false;

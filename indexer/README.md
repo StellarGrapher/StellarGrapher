@@ -39,6 +39,8 @@ docker compose up
 | -------------------- | ------------------------------------ | ------------------------------------ |
 | `DATABASE_URL`       | *(required)*                         | PostgreSQL connection string         |
 | `SOROBAN_RPC_URL`    | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint to poll        |
+| `SOROBAN_RPC_URLS`   | *(unset)*                            | Comma-separated RPC endpoints; the first is the primary and the rest are failover targets. Overrides `SOROBAN_RPC_URL` |
+| `SOROBAN_RPC_FAILOVER_THRESHOLD` | `3`                    | Consecutive failures before switching to the next RPC endpoint |
 | `POLL_INTERVAL_MS`   | `5000`                               | Milliseconds between poll cycles     |
 | `HEALTH_PORT`        | `8080`                               | Port for the `GET /healthz` endpoint |
 | `HEALTH_MAX_LEDGER_LAG` | `60`                              | Ledgers behind the network before `/healthz` returns 503 |

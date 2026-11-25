@@ -38,6 +38,7 @@ function requirePositiveInt(name: string, fallback: number): number {
 }
 
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
+const RPC_FAILOVER_THRESHOLD = requirePositiveInt("SOROBAN_RPC_FAILOVER_THRESHOLD", 3);
 const POLL_INTERVAL_MS = requirePositiveInt("POLL_INTERVAL_MS", 5000);
 const HEALTH_PORT = requirePositiveInt("HEALTH_PORT", 8080);
 const MAX_LEDGER_LAG = requirePositiveInt("HEALTH_MAX_LEDGER_LAG", 60);
@@ -76,7 +77,81 @@ export const metricPollErrors = new Counter({
   registers: [metricsRegistry],
 });
 
-export const server = new rpc.Server(RPC_URL, { timeout: 10_000 });
+/**
+ * RPC endpoint failover (#71). SOROBAN_RPC_URLS is a comma-separated list of
+ * endpoints; the first entry is the primary. SOROBAN_RPC_URL is still honoured
+ * and used as the primary when SOROBAN_RPC_URLS is unset.
+ */
+export function parseRpcUrls(raw: string | undefined, primary: string): string[] {
+  const urls = (raw ?? "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter((url) => url !== "");
+  const all = urls.length > 0 ? urls : [primary];
+  return [...new Set(all)];
+}
+
+export const RPC_URLS = parseRpcUrls(process.env.SOROBAN_RPC_URLS, RPC_URL);
+
+/**
+ * Rotates through RPC endpoints after `threshold` consecutive failures and
+ * returns to the primary as soon as it answers again.
+ */
+export class RpcFailover {
+  private index = 0;
+  private failures = 0;
+
+  constructor(
+    readonly urls: string[],
+    private readonly threshold: number = RPC_FAILOVER_THRESHOLD
+  ) {
+    if (urls.length === 0) throw new Error("at least one RPC URL is required");
+  }
+
+  get activeUrl(): string {
+    return this.urls[this.index];
+  }
+
+  get activeServer(): rpc.Server {
+    return this.servers[this.index];
+  }
+
+  private readonly servers = this.urls.map(
+    (url) => new rpc.Server(url, { timeout: 10_000 })
+  );
+
+  /** Record a successful call: reset the failure count and prefer the primary again. */
+  recordSuccess(): void {
+    this.failures = 0;
+    if (this.index !== 0) {
+      this.index = 0;
+      console.log(`[indexer] RPC endpoint recovered, switching back to primary ${this.activeUrl}`);
+    }
+  }
+
+  /** Record a failed call; returns true when the active endpoint was rotated. */
+  recordFailure(): boolean {
+    this.failures++;
+    if (this.failures < this.threshold || this.urls.length === 1) return false;
+    this.failures = 0;
+    this.index = (this.index + 1) % this.urls.length;
+    console.warn(
+      `[indexer] RPC endpoint failed ${this.threshold} times in a row, switching to ${this.activeUrl}`
+    );
+    return true;
+  }
+}
+
+export const failover = new RpcFailover(RPC_URLS);
+console.log(`[indexer] active RPC endpoint: ${failover.activeUrl}`);
+
+/** The RPC server currently in use; follows failover rotations. */
+export const server = {
+  getHealth: () => failover.activeServer.getHealth(),
+  getLatestLedger: () => failover.activeServer.getLatestLedger(),
+  getTransactions: (args: Parameters<rpc.Server["getTransactions"]>[0]) =>
+    failover.activeServer.getTransactions(args),
+};
 
 let stopping = false;
 let wakeFromSleep = (): void => {};
@@ -422,6 +497,7 @@ export async function commitPage(
 
 async function main(): Promise<void> {
   const network = await server.getHealth();
+  failover.recordSuccess();
   const existing = await findCursor();
   if (existing && process.env.INDEXER_START_LEDGER) {
     console.warn(
@@ -435,6 +511,7 @@ async function main(): Promise<void> {
   health.cursor = cursor;
   health.latestLedger = network.latestLedger;
   console.log(`[indexer] starting at ledger ${cursor} (network is at ${network.latestLedger})`);
+  console.log(`[indexer] active RPC endpoint: ${failover.activeUrl}`);
 
   const healthServer = startHealthServer();
   process.once("SIGTERM", requestShutdown);
@@ -469,11 +546,13 @@ async function main(): Promise<void> {
         }
       }
       consecutiveFailures = 0;
+      failover.recordSuccess();
       health.lastPollFailed = false;
       recordLag(health.latestLedger, health.cursor);
       delayMs = caughtUp ? POLL_INTERVAL_MS : 0;
     } catch (err) {
       consecutiveFailures++;
+      failover.recordFailure();
       health.lastPollFailed = true;
       metricPollErrors.inc();
       delayMs = backoffDelay(consecutiveFailures);
