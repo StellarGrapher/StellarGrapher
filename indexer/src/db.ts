@@ -77,3 +77,21 @@ export async function setBackfillCursor(
     create: { id: 1, fromLedger, toLedger, lastLedger, paginationCursor, completed },
   });
 }
+
+/**
+ * Security review (#126): Postgres query parameterization.
+ *
+ * All indexer database access goes through the Prisma Client query builder
+ * (findUnique / create / upsert above), which emits parameterized SQL with
+ * values bound as placeholders — never string-interpolated into the query.
+ *
+ * There are currently no `$queryRaw` / `$executeRaw` calls in the indexer.
+ * If raw SQL is ever added, it MUST use the `Prisma.sql` tagged template so
+ * values are bound as parameters, e.g.:
+ *
+ *   await prisma.$queryRaw(Prisma.sql`SELECT * FROM "IndexerCursor" WHERE id = ${id}`);
+ *
+ * Never build SQL via string concatenation or template interpolation of
+ * user-controlled values (e.g. `$queryRawUnsafe("..." + value)`).
+ */
+export const RAW_SQL_POLICY = "Prisma.sql" as const;
