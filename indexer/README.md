@@ -45,6 +45,7 @@ docker compose up
 | `HEALTH_PORT`        | `8080`                               | Port for the `GET /healthz` endpoint |
 | `HEALTH_MAX_LEDGER_LAG` | `60`                              | Ledgers behind the network before `/healthz` returns 503 |
 | `INDEXER_START_LEDGER` | *(latest ledger)*                  | First ledger to index on a fresh database; must be inside the RPC node's retention window. Ignored once a cursor exists |
+| `INDEXER_RETENTION_DAYS` | *(unset — unlimited)*             | Days of events and invocations to keep. A daily task deletes older rows; contracts are never pruned |
 
 ## How It Works
 
@@ -141,6 +142,10 @@ One row per ledger range the live indexer skipped without indexing, because the 
 | `fromLedger`  | `Int`    | First ledger skipped                 |
 | `toLedger`    | `Int`    | Last ledger skipped                  |
 | `reason`      | `String` | Why the range was skipped            |
+
+## Data Retention
+
+When `INDEXER_RETENTION_DAYS` is set, the indexer runs a pruning task at startup and then once every 24 hours. It deletes `contract_events` and `invocations` rows whose `createdAt` is older than the window and logs the pruned row count (also exported as `indexer_rows_pruned_total`). The `contracts` table is permanent and is never pruned. Unset, retention is unlimited and no pruning runs.
 
 ## Failure Behaviour
 

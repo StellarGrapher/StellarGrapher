@@ -46,6 +46,31 @@ const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 60_000;
 export const PAGE_LIMIT = 50;
 
+/**
+ * Data retention (#72). INDEXER_RETENTION_DAYS is the number of days of events and
+ * invocations to keep; unset (or blank) means unlimited, i.e. nothing is pruned.
+ */
+export const RETENTION_DAYS = parseRetentionDays(process.env.INDEXER_RETENTION_DAYS);
+export const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+
+export function parseRetentionDays(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    console.error(
+      `[indexer] fatal: INDEXER_RETENTION_DAYS must be a positive integer, got "${raw}"`
+    );
+    process.exit(1);
+  }
+  return n;
+}
+
+/** Rows older than this instant are pruned; null when retention is unlimited. */
+export function retentionCutoff(days: number | null, now: number = Date.now()): Date | null {
+  if (days === null) return null;
+  return new Date(now - days * 24 * 60 * 60 * 1_000);
+}
+
 // ---------------------------------------------------------------------------
 // Prometheus metrics (#23)
 // ---------------------------------------------------------------------------
@@ -74,6 +99,13 @@ export const metricLag = new Gauge({
 export const metricPollErrors = new Counter({
   name: "indexer_poll_errors_total",
   help: "Total number of poll errors encountered",
+  registers: [metricsRegistry],
+});
+
+export const metricRowsPruned = new Counter({
+  name: "indexer_rows_pruned_total",
+  help: "Total rows deleted by the retention pruning task, partitioned by table",
+  labelNames: ["table"] as const,
   registers: [metricsRegistry],
 });
 
@@ -406,6 +438,61 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
+/**
+ * Delete events and invocations older than the retention window (#72). Contracts are
+ * permanent and never pruned. Returns the number of rows deleted per table.
+ */
+export async function pruneOldRecords(
+  days: number | null,
+  db: Db = prisma,
+  now: number = Date.now()
+): Promise<{ events: number; invocations: number }> {
+  const cutoff = retentionCutoff(days, now);
+  if (cutoff === null) return { events: 0, invocations: 0 };
+
+  const events = await db.contractEventRecord.deleteMany({
+    where: { createdAt: { lt: cutoff } },
+  });
+  const invocations = await db.invocation.deleteMany({
+    where: { createdAt: { lt: cutoff } },
+  });
+  return { events: events.count, invocations: invocations.count };
+}
+
+/** Run pruning once and log the pruned row count. Never throws. */
+export async function runPrune(
+  days: number | null = RETENTION_DAYS,
+  db: Db = prisma
+): Promise<void> {
+  if (days === null) return;
+  try {
+    const { events, invocations } = await pruneOldRecords(days, db);
+    metricRowsPruned.inc({ table: "contractEventRecord" }, events);
+    metricRowsPruned.inc({ table: "invocation" }, invocations);
+    console.log(
+      `[indexer] retention: pruned ${events} events and ${invocations} invocations older than ${days} days`
+    );
+  } catch (err) {
+    console.error("[indexer] retention: pruning failed:", err);
+  }
+}
+
+/** Prune now, then once per PRUNE_INTERVAL_MS until the returned timer is cleared. */
+export function startPruneSchedule(
+  days: number | null = RETENTION_DAYS,
+  intervalMs: number = PRUNE_INTERVAL_MS
+): NodeJS.Timeout | null {
+  if (days === null) {
+    console.log("[indexer] retention: INDEXER_RETENTION_DAYS unset, pruning disabled");
+    return null;
+  }
+  console.log(`[indexer] retention: pruning events and invocations older than ${days} days daily`);
+  void runPrune(days);
+  const timer = setInterval(() => void runPrune(days), intervalMs);
+  timer.unref();
+  return timer;
+}
+
 /** Where a page leaves the cursor, plus any ledger range the page skipped without indexing. */
 export interface PageProgress {
   lastLedger: number;
@@ -514,6 +601,7 @@ async function main(): Promise<void> {
   console.log(`[indexer] active RPC endpoint: ${failover.activeUrl}`);
 
   const healthServer = startHealthServer();
+  const pruneTimer = startPruneSchedule();
   process.once("SIGTERM", requestShutdown);
   process.once("SIGINT", requestShutdown);
 
@@ -565,6 +653,7 @@ async function main(): Promise<void> {
   }
 
   console.log("[indexer] shutting down");
+  if (pruneTimer) clearInterval(pruneTimer);
   await setCursor(cursor, paginationCursor);
   healthServer.close();
   await prisma.$disconnect();
