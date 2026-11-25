@@ -285,7 +285,7 @@ export interface PageProgress {
 }
 
 /** Fetch one transaction page from the persisted ledger and RPC pagination cursor. Writes nothing. */
-async function fetchPage(
+export async function fetchPage(
   cursor: number,
   paginationCursor: string | null,
   latestLedger: number
@@ -366,7 +366,7 @@ export async function commitPage(
   );
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const network = await server.getHealth();
   const existing = await findCursor();
   if (existing && process.env.INDEXER_START_LEDGER) {

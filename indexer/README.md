@@ -154,4 +154,15 @@ cd indexer
 npm test
 ```
 
-Tests cover the XDR decoder (`decode.test.ts`) — the most correctness-critical component, which turns raw transaction envelopes into typed invocation/storage/event records.
+Tests cover the XDR decoder (`decode.test.ts`) — the most correctness-critical component, which turns raw transaction envelopes into typed invocation/storage/event records — and the indexer's page/cursor logic (`index.test.ts`).
+
+### Postgres round-trip integration test
+
+`src/integration.test.ts` runs the indexer's real poll loop (`main()`) against a mock Soroban RPC server, writes the decoded rows to a real PostgreSQL instance, and reads them back through Prisma to verify event count, fields and ordering. It is skipped unless `TEST_DATABASE_URL` points at a disposable database:
+
+```bash
+docker compose up -d postgres
+TEST_DATABASE_URL="postgresql://prism:prism@localhost:5432/prism_test" npm test
+```
+
+The test applies the Prisma migrations to that database, truncates the indexer tables, and leaves the schema in place. CI runs it against a `postgres:16` service container.
