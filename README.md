@@ -152,3 +152,8 @@ Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to g
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+## Handsoff notes
+
+<!-- handsoff-issue-7 -->
+- #7: feat(frontend): Add key filtering/search in contract storage inspector
