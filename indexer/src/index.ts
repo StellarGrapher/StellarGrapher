@@ -11,6 +11,8 @@ import {
   extractInvocationReturnValue,
   extractStorageChanges,
 } from "./decode.js";
+import { retryDeadLetterEvent } from "./dead-letter.js";
+import type { DeadLetterStage } from "./dead-letter.js";
 
 // ---------------------------------------------------------------------------
 // Environment variable validation (#20)
@@ -36,6 +38,7 @@ function requirePositiveInt(name: string, fallback: number): number {
   }
   return n;
 }
+
 
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
 const POLL_INTERVAL_MS = requirePositiveInt("INDEXER_POLL_INTERVAL_MS", 6000);
@@ -73,6 +76,19 @@ export const metricLag = new Gauge({
 export const metricPollErrors = new Counter({
   name: "indexer_poll_errors_total",
   help: "Total number of poll errors encountered",
+  registers: [metricsRegistry],
+});
+
+export const metricDeadLetterQueueSize = new Gauge({
+  name: "indexer_dead_letter_queue_size",
+  help: "Number of unresolved dead-letter events awaiting retry",
+  registers: [metricsRegistry],
+});
+
+export const metricDeadLetterEvents = new Counter({
+  name: "indexer_dead_letter_events_total",
+  help: "Total dead-letter events recorded, partitioned by stage",
+  labelNames: ["stage"] as const,
   registers: [metricsRegistry],
 });
 
@@ -273,6 +289,50 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
     });
     metricRowsWritten.inc({ table: "contractEventRecord" }, eventsResult.count);
   }
+}
+
+/**
+ * Process one transaction, recording it in the dead-letter queue instead of
+ * failing the whole page when it cannot be decoded or persisted.
+ */
+export async function processTransactionSafely(
+  tx: rpc.Api.TransactionInfo,
+  db: Db = prisma
+): Promise<void> {
+  try {
+    await processTransaction(tx, db);
+  } catch (err) {
+    await recordDeadLetterEvent(tx, "persist", errorMessage(err), db);
+  }
+}
+
+/** Persist a failed transaction to the dead-letter queue and bump its metrics. */
+export async function recordDeadLetterEvent(
+  tx: rpc.Api.TransactionInfo,
+  stage: DeadLetterStage,
+  message: string,
+  db: Db = prisma
+): Promise<void> {
+  await db.deadLetterEvent.upsert({
+    where: { txHash_stage: { txHash: tx.txHash, stage } },
+    update: { errorMessage: message, resolvedAt: null },
+    create: {
+      txHash: tx.txHash,
+      ledger: tx.ledger,
+      stage,
+      errorMessage: message,
+      envelopeXdr: tx.envelopeXdr.toXDR("base64"),
+      resultMetaXdr: tx.resultMetaXdr.toXDR("base64"),
+    },
+  });
+  metricDeadLetterEvents.inc({ stage });
+  await refreshDeadLetterQueueSize(db);
+}
+
+/** Re-read the unresolved dead-letter count into the queue-size gauge. */
+export async function refreshDeadLetterQueueSize(db: Db = prisma): Promise<void> {
+  const size = await db.deadLetterEvent.count({ where: { resolvedAt: null } });
+  metricDeadLetterQueueSize.set(size);
 }
 
 function errorMessage(err: unknown): string {

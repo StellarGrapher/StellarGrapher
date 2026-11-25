@@ -29,6 +29,25 @@ model IndexerGap {
   @@index([fromLedger])
 }
 
+// A transaction the indexer could not decode or persist. Kept instead of being
+// silently skipped so it can be inspected and retried from the admin endpoint.
+model DeadLetterEvent {
+  id           String    @id @default(cuid())
+  txHash       String
+  ledger       Int
+  stage        String // decode | persist
+  errorMessage String
+  envelopeXdr  String
+  resultMetaXdr String
+  createdAt    DateTime  @default(now())
+  retryCount   Int       @default(0)
+  lastRetryAt  DateTime?
+  resolvedAt   DateTime?
+
+  @@unique([txHash, stage])
+  @@index([resolvedAt, createdAt])
+}
+
 model BackfillCursor {
   id               Int      @id @default(1)
   fromLedger       Int
