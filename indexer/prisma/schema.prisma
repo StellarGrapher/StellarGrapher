@@ -95,7 +95,9 @@ model ContractEventRecord {
   value      String
   txHash     String
   ledger     Int
+  eventIndex Int
   createdAt  DateTime
 
+  @@unique([contractId, ledger, eventIndex])
   @@index([contractId, ledger])
 }

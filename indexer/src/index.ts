@@ -256,6 +256,7 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
       skipDuplicates: true,
       data: events.map((e) => ({
         eventId: e.eventId,
+        eventIndex: e.eventIndex,
         contractId: e.contractId,
         type: e.type,
         topic: e.topic,
