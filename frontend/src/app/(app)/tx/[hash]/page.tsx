@@ -176,13 +176,6 @@ export default async function TxPage({ params }: Props) {
           {i === 0 && resources && (
             <>
               <DetailRow label="CPU Instructions" value={formatNumber(resources.instructions)} />
-              <DetailRow label="Read Bytes" value={formatNumber(resources.readBytes)} />
-              <DetailRow label="Write Bytes" value={formatNumber(resources.writeBytes)} />
-              <DetailRow label="Resource Fee" value={`${resources.resourceFeeStroops} stroops`} />
-            </>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
+              <DetailRow label="Read B
+
+/* … truncated 313 chars — edit only what you need near the top … */
