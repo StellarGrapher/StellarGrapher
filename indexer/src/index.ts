@@ -65,8 +65,8 @@ export const metricRowsWritten = new Counter({
 });
 
 export const metricLag = new Gauge({
-  name: "indexer_ledger_lag",
-  help: "Current lag between the indexer cursor and the network latest ledger",
+  name: "indexer_lag_ledgers",
+  help: "Current lag in ledgers between the network latest ledger and the last indexed ledger",
   registers: [metricsRegistry],
 });
 
@@ -139,6 +139,32 @@ export function seedLastLedger(
 }
 
 const health: HealthSnapshot = { cursor: 0, latestLedger: 0, lastPollFailed: false };
+
+const LAG_LOG_INTERVAL_MS = 60_000;
+
+/** Lag in ledgers between the network latest ledger and the last indexed ledger. */
+export function ledgerLag(latestNetworkLedger: number, lastIndexedLedger: number): number {
+  return Math.max(0, latestNetworkLedger - lastIndexedLedger);
+}
+
+/** Records the lag gauge and logs it at most once per LAG_LOG_INTERVAL_MS. */
+export function recordLag(
+  latestNetworkLedger: number,
+  lastIndexedLedger: number,
+  now: number = Date.now()
+): number {
+  const lag = ledgerLag(latestNetworkLedger, lastIndexedLedger);
+  metricLag.set(lag);
+  if (now - lastLagLogAt >= LAG_LOG_INTERVAL_MS) {
+    lastLagLogAt = now;
+    console.log(
+      `[indexer] lag: ${lag} ledgers (network ${latestNetworkLedger}, indexed ${lastIndexedLedger})`
+    );
+  }
+  return lag;
+}
+
+let lastLagLogAt = 0;
 
 function startHealthServer(): Server {
   const httpServer = createServer(async (req, res) => {
@@ -444,7 +470,7 @@ async function main(): Promise<void> {
       }
       consecutiveFailures = 0;
       health.lastPollFailed = false;
-      metricLag.set(Math.max(0, health.latestLedger - health.cursor));
+      recordLag(health.latestLedger, health.cursor);
       delayMs = caughtUp ? POLL_INTERVAL_MS : 0;
     } catch (err) {
       consecutiveFailures++;

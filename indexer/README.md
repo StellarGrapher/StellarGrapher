@@ -157,6 +157,8 @@ One row per ledger range the live indexer skipped without indexing, because the 
 
 It returns `200` when the last poll succeeded and `lag` (`latestLedger - cursor`) is at most `HEALTH_MAX_LEDGER_LAG`. Otherwise it returns `503`. The Compose file uses this endpoint for the indexer's healthcheck.
 
+`GET /metrics` exposes Prometheus metrics, including the gauge `indexer_lag_ledgers` (`latestNetworkLedger - lastIndexedLedger`). The lag is also logged every 60 seconds.
+
 ## Retention Gap
 
 Live indexing starts at the ledger current on first launch. Historical data can be loaded separately with the backfill command, subject to the configured RPC node's available history. Data outside the live start point and any completed backfill ranges remains unindexed.
