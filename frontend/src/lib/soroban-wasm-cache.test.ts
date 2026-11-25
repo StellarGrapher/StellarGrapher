@@ -12,6 +12,7 @@ import { rpc } from "@stellar/stellar-sdk";
 vi.mock("./indexed-db", () => ({
   isIndexerConfigured: vi.fn(() => false),
   getIndexedEvents: vi.fn(),
+  searchIndexedEvents: vi.fn(),
   getIndexedInvocations: vi.fn(),
   getIndexedStorageEntries: vi.fn(),
 }));

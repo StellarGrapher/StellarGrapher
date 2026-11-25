@@ -23,6 +23,7 @@ import {
   getIndexedEvents,
   getIndexedStorageEntries,
   getIndexedInvocationReturnValue,
+  searchIndexedEvents,
 } from "./indexed-db";
 
 const RPC_URL = config.sorobanRpcUrl;
@@ -224,6 +225,26 @@ export async function getContractEventsPage(
   }
   if (request.before) return { items: [], nextCursor: null, error: null };
   return { ...(await getContractEventsFromRpc(contractId, request.limit)), nextCursor: null };
+}
+
+/**
+ * Full-text search over decoded event topics and values. Only the indexer has
+ * the decoded history to search, so this returns nothing when it is not
+ * configured.
+ */
+export async function searchEvents(query: string, limit = 20): Promise<ContractEvent[]> {
+  if (!isIndexerConfigured()) return [];
+  const events = await searchIndexedEvents(query, limit);
+  return events.map((e) => ({
+    id: e.eventId,
+    contractId: e.contractId,
+    type: e.type,
+    topic: e.topic,
+    value: e.value,
+    txHash: e.txHash,
+    ledger: e.ledger,
+    timestamp: e.createdAt,
+  }));
 }
 
 interface RpcEventsResult {

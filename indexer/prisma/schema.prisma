@@ -96,6 +96,10 @@ model ContractEventRecord {
   txHash     String
   ledger     Int
   createdAt  DateTime
+  // Full-text search document over the decoded topic and value. Maintained by
+  // the ContractEventRecord_search_vector trigger (see the fts migration), so
+  // it is never written from application code.
+  searchVector Unsupported("tsvector")? @map("search_vector")
 
   @@index([contractId, ledger])
 }

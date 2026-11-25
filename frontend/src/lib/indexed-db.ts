@@ -221,6 +221,44 @@ export async function getIndexedTokenTransfers(
   };
 }
 
+export interface IndexedEvent {
+  eventId: string;
+  contractId: string;
+  type: string;
+  topic: string[];
+  value: string;
+  txHash: string;
+  ledger: number;
+  createdAt: string;
+}
+
+/**
+ * Full-text search over decoded event topics and values, newest first. Uses the
+ * `search_vector` tsvector column the indexer maintains via trigger. Returns an
+ * empty list when the indexer is not configured.
+ */
+export async function searchIndexedEvents(query: string, limit: number): Promise<IndexedEvent[]> {
+  if (!isIndexerConfigured()) return [];
+  const { rows } = await getPool().query(
+    `SELECT "eventId", "contractId", type, topic, value, "txHash", ledger, "createdAt"
+     FROM "ContractEventRecord"
+     WHERE "search_vector" @@ websearch_to_tsquery('simple', $1)
+     ORDER BY ts_rank("search_vector", websearch_to_tsquery('simple', $1)) DESC, ledger DESC, id DESC
+     LIMIT $2`,
+    [query, limit]
+  );
+  return rows.map((r) => ({
+    eventId: r.eventId,
+    contractId: r.contractId,
+    type: r.type,
+    topic: r.topic,
+    value: r.value,
+    txHash: r.txHash,
+    ledger: r.ledger,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
 export interface IndexedStorageEntry {
   durability: string;
   keyDisplay: string;
