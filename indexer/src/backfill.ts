@@ -1,7 +1,24 @@
-import { prisma, getBackfillCursor, setBackfillCursor } from "./db.js";
+import {
+  prisma,
+  getBackfillCursor,
+  setBackfillCursor,
+  findIncompleteBackfill,
+  clearBackfillCursor,
+} from "./db.js";
 import { PAGE_LIMIT, processTransaction, server } from "./index.js";
 
-export async function backfill(fromLedger: number, toLedger: number): Promise<void> {
+/** Persist the checkpoint at least every this many ledgers. */
+export const CHECKPOINT_INTERVAL = 100;
+
+export interface BackfillOptions {
+  resume?: boolean;
+}
+
+export async function backfill(
+  fromLedger: number,
+  toLedger: number,
+  options: BackfillOptions = {}
+): Promise<void> {
   if (!Number.isSafeInteger(fromLedger) || fromLedger < 1) {
     throw new Error("--from must be a positive ledger number");
   }
@@ -9,11 +26,26 @@ export async function backfill(fromLedger: number, toLedger: number): Promise<vo
     throw new Error("--to must be a ledger number greater than or equal to --from");
   }
 
+  if (options.resume) {
+    const checkpoint = await findIncompleteBackfill();
+    if (!checkpoint) {
+      console.log("[backfill] no checkpoint found; starting from --from");
+    } else {
+      fromLedger = checkpoint.fromLedger;
+      toLedger = checkpoint.toLedger;
+      console.log(
+        `[backfill] resuming ledger range ${fromLedger}-${toLedger} from ledger ${checkpoint.lastLedger}`
+      );
+    }
+  }
+
   let state = await getBackfillCursor(fromLedger, toLedger);
   if (state.completed) {
     console.log(`[backfill] ledger range ${fromLedger}-${toLedger} is already complete`);
     return;
   }
+
+  let checkpointedLedger = state.lastLedger;
 
   while (true) {
     const response = state.paginationCursor
@@ -36,7 +68,7 @@ export async function backfill(fromLedger: number, toLedger: number): Promise<vo
     }
 
     if (reachedEnd) {
-      await setBackfillCursor(fromLedger, toLedger, toLedger, null, true);
+      await clearBackfillCursor();
       break;
     }
 
@@ -44,7 +76,10 @@ export async function backfill(fromLedger: number, toLedger: number): Promise<vo
       if (!response.cursor || response.cursor === state.paginationCursor) {
         throw new Error("RPC returned a full page without advancing its transaction cursor");
       }
-      await setBackfillCursor(fromLedger, toLedger, lastLedger, response.cursor, false);
+      if (lastLedger - checkpointedLedger >= CHECKPOINT_INTERVAL) {
+        await setBackfillCursor(fromLedger, toLedger, lastLedger, response.cursor, false);
+        checkpointedLedger = lastLedger;
+      }
       state = { ...state, lastLedger, paginationCursor: response.cursor };
       continue;
     }
@@ -56,35 +91,40 @@ export async function backfill(fromLedger: number, toLedger: number): Promise<vo
       );
     }
 
-    await setBackfillCursor(fromLedger, toLedger, toLedger, null, true);
+    await clearBackfillCursor();
     break;
   }
 
   console.log(`[backfill] completed ledger range ${fromLedger}-${toLedger}`);
 }
 
-function parseRange(args: string[]): { fromLedger: number; toLedger: number } {
+function parseRange(args: string[]): { fromLedger: number; toLedger: number; resume: boolean } {
   let from: string | undefined;
   let to: string | undefined;
+  let resume = false;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--from") from = args[++i];
     else if (args[i] === "--to") to = args[++i];
+    else if (args[i] === "--resume") resume = true;
     else throw new Error(`Unknown argument: ${args[i]}`);
   }
+  if (resume && from === undefined && to === undefined) {
+    return { fromLedger: 1, toLedger: 1, resume };
+  }
   if (from === undefined || to === undefined) {
-    throw new Error("Usage: npm run backfill -- --from <ledger> --to <ledger>");
+    throw new Error("Usage: npm run backfill -- --from <ledger> --to <ledger> [--resume]");
   }
   const fromLedger = Number(from);
   const toLedger = Number(to);
   if (!Number.isSafeInteger(fromLedger) || !Number.isSafeInteger(toLedger)) {
     throw new Error("--from and --to must be safe integers");
   }
-  return { fromLedger, toLedger };
+  return { fromLedger, toLedger, resume };
 }
 
 try {
-  const { fromLedger, toLedger } = parseRange(process.argv.slice(2));
-  await backfill(fromLedger, toLedger);
+  const { fromLedger, toLedger, resume } = parseRange(process.argv.slice(2));
+  await backfill(fromLedger, toLedger, { resume });
 } catch (err) {
   console.error("[backfill] failed:", err);
   process.exitCode = 1;

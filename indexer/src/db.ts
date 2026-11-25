@@ -64,6 +64,17 @@ export async function getBackfillCursor(fromLedger: number, toLedger: number) {
   });
 }
 
+/** The incomplete backfill checkpoint, if any. */
+export async function findIncompleteBackfill() {
+  const existing = await prisma.backfillCursor.findUnique({ where: { id: 1 } });
+  return existing && !existing.completed ? existing : null;
+}
+
+/** Drop the backfill checkpoint row once a range has completed. */
+export async function clearBackfillCursor(): Promise<void> {
+  await prisma.backfillCursor.deleteMany({ where: { id: 1 } });
+}
+
 export async function setBackfillCursor(
   fromLedger: number,
   toLedger: number,
