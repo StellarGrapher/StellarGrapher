@@ -1,5 +1,6 @@
 import { prisma, getBackfillCursor, setBackfillCursor } from "./db.js";
 import { PAGE_LIMIT, processTransaction, server } from "./index.js";
+import { log } from "./logger.js";
 
 export async function backfill(fromLedger: number, toLedger: number): Promise<void> {
   if (!Number.isSafeInteger(fromLedger) || fromLedger < 1) {
@@ -11,7 +12,7 @@ export async function backfill(fromLedger: number, toLedger: number): Promise<vo
 
   let state = await getBackfillCursor(fromLedger, toLedger);
   if (state.completed) {
-    console.log(`[backfill] ledger range ${fromLedger}-${toLedger} is already complete`);
+    log.info("ledger range is already complete", { component: "backfill", fromLedger, toLedger });
     return;
   }
 
@@ -60,7 +61,7 @@ export async function backfill(fromLedger: number, toLedger: number): Promise<vo
     break;
   }
 
-  console.log(`[backfill] completed ledger range ${fromLedger}-${toLedger}`);
+  log.info("completed ledger range", { component: "backfill", fromLedger, toLedger });
 }
 
 function parseRange(args: string[]): { fromLedger: number; toLedger: number } {
@@ -86,7 +87,7 @@ try {
   const { fromLedger, toLedger } = parseRange(process.argv.slice(2));
   await backfill(fromLedger, toLedger);
 } catch (err) {
-  console.error("[backfill] failed:", err);
+  log.error("backfill failed", { component: "backfill", err });
   process.exitCode = 1;
 } finally {
   await prisma.$disconnect();
