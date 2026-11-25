@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { backoffDelay, commitPage, healthReport, seedLastLedger } from "./index.js";
+import { backoffDelay, commitPage, healthReport, processTransaction, seedLastLedger } from "./index.js";
+import { successfulInvoke } from "./fixtures/index.js";
 
 describe("backoffDelay", () => {
   it("doubles the delay for each consecutive failure", () => {

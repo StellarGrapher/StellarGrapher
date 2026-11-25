@@ -351,11 +351,15 @@ export async function processTransaction(
 
   const changes = extractStorageChanges(tx.resultMetaXdr);
   if (changes.length > 0) {
+    // Rows are keyed by (txHash, changeIndex): a restart that reprocesses this
+    // transaction maps onto the same rows, so skipDuplicates silently ignores
+    // them instead of tripping the unique constraint.
     const storageResult = await db.storageChange.createMany({
       skipDuplicates: true,
       data: changes.map((c) => ({
         contractId: c.contractId,
         durability: c.durability,
+        changeIndex: c.changeIndex,
         keyDisplay: c.keyDisplay,
         valueDisplay: c.valueDisplay,
         changeType: c.changeType,

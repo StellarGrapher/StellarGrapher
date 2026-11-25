@@ -148,6 +148,10 @@ function sorobanReturnValue(meta: xdr.TransactionMeta): xdr.ScVal | null {
 export interface DecodedStorageChange {
   contractId: string;
   durability: "persistent" | "temporary" | "instance";
+  // Position of the change within the transaction's meta. Together with the
+  // tx hash it identifies the row, so reprocessing a transaction after a
+  // restart maps onto the same rows instead of colliding on the natural key.
+  changeIndex: number;
   keyDisplay: string;
   valueDisplay: string | null;
   changeType: "created" | "updated" | "removed" | "state";
@@ -175,6 +179,7 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
         out.push({
           contractId: Address.fromScAddress(cd.contract()).toString(),
           durability: cd.durability().name as "persistent" | "temporary",
+          changeIndex: out.length,
           keyDisplay: scValToDisplay(cd.key()),
           valueDisplay: null,
           changeType: "removed",
@@ -201,13 +206,14 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
       const contractId = Address.fromScAddress(cd.contract()).toString();
 
       if (isInstanceKey) {
-        out.push(...expandInstanceEntry(contractId, cd.val(), changeType));
+        out.push(...expandInstanceEntry(contractId, cd.val(), changeType, out.length));
         continue;
       }
 
       out.push({
         contractId,
         durability: cd.durability().name as "persistent" | "temporary",
+        changeIndex: out.length,
         keyDisplay: scValToDisplay(cd.key()),
         valueDisplay: scValToDisplay(cd.val()),
         changeType,
@@ -226,7 +232,8 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
 function expandInstanceEntry(
   contractId: string,
   val: xdr.ScVal,
-  changeType: DecodedStorageChange["changeType"]
+  changeType: DecodedStorageChange["changeType"],
+  startIndex: number
 ): DecodedStorageChange[] {
   if (val.switch().name !== "scvContractInstance") return [];
   const instance = val.instance();
@@ -237,6 +244,7 @@ function expandInstanceEntry(
     out.push({
       contractId,
       durability: "instance",
+      changeIndex: startIndex + out.length,
       keyDisplay: "__wasm_hash__",
       valueDisplay: executable.wasmHash().toString("hex"),
       changeType,
@@ -247,6 +255,7 @@ function expandInstanceEntry(
     out.push({
       contractId,
       durability: "instance",
+      changeIndex: startIndex + out.length,
       keyDisplay: scValToDisplay(entry.key()),
       valueDisplay: scValToDisplay(entry.val()),
       changeType,
