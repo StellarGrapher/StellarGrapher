@@ -8,6 +8,7 @@ import { decodeInvocations, decodeTransactionFailure, getResourceUsage } from "@
 import { formatDate, formatFee, stroopsToXlm, formatNumber } from "@/lib/format";
 import { notFound } from "next/navigation";
 import DetailRow from "@/components/DetailRow";
+import Skeleton from "@/components/Skeleton";
 
 export const dynamic = "force-dynamic";
 
@@ -176,6 +177,27 @@ export default async function TxPage({ params }: Props) {
           {i === 0 && resources && (
             <>
               <DetailRow label="CPU Instructions" value={formatNumber(resources.instructions)} />
-              <DetailRow label="Read B
+              <DetailRow label="Read Bytes" value={formatNumber(resources.readBytes)} />
+              <DetailRow label="Write Bytes" value={formatNumber(resources.writeBytes)} />
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
-/* … truncated 313 chars — edit only what you need near the top … */
+function Row({ label, value, mono, link }: { label: string; value: string; mono?: boolean; link?: string }) {
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-4 border-b border-prism-border pb-3">
+      <span className="text-prism-muted text-sm sm:w-40 shrink-0">{label}</span>
+      {link ? (
+        <Link href={link} className={`text-prism-accent hover:underline break-all ${mono ? "font-mono text-sm" : ""}`}>
+          {value}
+        </Link>
+      ) : (
+        <span className={`break-all ${mono ? "font-mono text-sm" : ""}`}>{value}</span>
+      )}
+    </div>
+  );
+}
