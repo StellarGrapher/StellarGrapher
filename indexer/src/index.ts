@@ -38,7 +38,7 @@ function requirePositiveInt(name: string, fallback: number): number {
 }
 
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
-const POLL_INTERVAL_MS = requirePositiveInt("POLL_INTERVAL_MS", 5000);
+const POLL_INTERVAL_MS = requirePositiveInt("INDEXER_POLL_INTERVAL_MS", 6000);
 const HEALTH_PORT = requirePositiveInt("HEALTH_PORT", 8080);
 const MAX_LEDGER_LAG = requirePositiveInt("HEALTH_MAX_LEDGER_LAG", 60);
 const BACKOFF_BASE_MS = 1_000;
