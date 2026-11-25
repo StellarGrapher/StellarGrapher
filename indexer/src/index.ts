@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
 import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
 import {
+  contractExpiresAtLedger,
+  contractInstanceLedgerKey,
   decodeContractCreation,
   decodeInvocation,
   extractEvents,
@@ -186,7 +188,31 @@ function sourceAccountOf(envelope: xdr.TransactionEnvelope): string {
   }
 }
 
-export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = prisma): Promise<void> {
+/**
+ * Expiration ledger of a contract's instance entry, read from getLedgerEntries'
+ * TTL field. Best-effort: a failed lookup leaves the column null rather than
+ * failing the page.
+ */
+async function fetchExpiresAtLedger(
+  contractId: string,
+  rpcServer: Pick<typeof server, "getLedgerEntries">
+): Promise<number | null> {
+  try {
+    const response = await rpcServer.getLedgerEntries(contractInstanceLedgerKey(contractId));
+    return contractExpiresAtLedger(response, contractId);
+  } catch (err) {
+    console.warn(
+      `[indexer] could not read TTL for contract ${contractId}: ${(err as Error).message}`
+    );
+    return null;
+  }
+}
+
+export async function processTransaction(
+  tx: rpc.Api.TransactionInfo,
+  db: Db = prisma,
+  rpcServer: Pick<typeof server, "getLedgerEntries"> = server
+): Promise<void> {
   const createdAt = new Date(tx.createdAt * 1000);
   const invocation = decodeInvocation(tx.envelopeXdr);
   const sourceAccount = sourceAccountOf(tx.envelopeXdr);
@@ -216,6 +242,7 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
   if (tx.status === "SUCCESS" && sourceAccount) {
     const contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
     if (contract) {
+      const expiresAtLedger = await fetchExpiresAtLedger(contract.contractId, rpcServer);
       const contractResult = await db.contract.createMany({
         data: [
           {
@@ -224,6 +251,7 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
             deploymentLedger: tx.ledger,
             deploymentTxHash: tx.txHash,
             createdAt,
+            expiresAtLedger,
           },
         ],
         skipDuplicates: true,

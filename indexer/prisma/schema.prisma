@@ -61,6 +61,9 @@ model Contract {
   deploymentLedger Int
   deploymentTxHash String   @unique
   createdAt        DateTime
+  // Ledger at which the contract instance entry expires (from getLedgerEntries
+  // liveUntilLedgerSeq). Null until observed or when the entry has no TTL.
+  expiresAtLedger  Int?
 
   @@index([creator])
 }

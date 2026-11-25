@@ -1,4 +1,4 @@
-import { Address, StrKey, xdr, scValToNative } from "@stellar/stellar-sdk";
+import { Address, StrKey, xdr, scValToNative, type rpc } from "@stellar/stellar-sdk";
 
 function toDisplaySafe(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
@@ -75,6 +75,38 @@ export function extractInvocationReturnValue(meta: xdr.TransactionMeta): string 
 export interface DecodedContractCreation {
   contractId: string;
   creator: string;
+}
+
+/** Ledger key for a contract's instance entry, used to look up its TTL. */
+export function contractInstanceLedgerKey(contractId: string): xdr.LedgerKey {
+  return xdr.LedgerKey.contractData(
+    new xdr.LedgerKeyContractData({
+      contract: Address.fromString(contractId).toScAddress(),
+      key: xdr.ScVal.scvLedgerKeyContractInstance(),
+      durability: xdr.ContractDataDurability.persistent(),
+    })
+  );
+}
+
+/**
+ * Expiration ledger of a contract instance entry from a getLedgerEntries
+ * response, or null when the entry is absent or carries no TTL.
+ */
+export function contractExpiresAtLedger(
+  response: rpc.Api.GetLedgerEntriesResponse,
+  contractId: string
+): number | null {
+  try {
+    const wanted = contractInstanceLedgerKey(contractId).toXDR("base64");
+    for (const entry of response.entries ?? []) {
+      if (entry.key.toXDR("base64") !== wanted) continue;
+      const liveUntil = entry.liveUntilLedgerSeq;
+      return typeof liveUntil === "number" && liveUntil > 0 ? liveUntil : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 export function decodeContractCreation(
