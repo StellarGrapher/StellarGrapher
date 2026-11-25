@@ -99,3 +99,24 @@ model ContractEventRecord {
 
   @@index([contractId, ledger])
 }
+
+// SEP-41 token events (transfer, mint, burn, approve), decoded out of the
+// contract events above so an account's token activity is queryable by
+// address without scanning every event's topics.
+model TokenEvent {
+  id              String   @id @default(cuid())
+  eventId         String   @unique
+  tokenContractId String
+  eventType       String // transfer | mint | burn | approve
+  from            String? // null for mint
+  to              String? // null for burn
+  spender         String? // set for approve
+  amount          String // decimal string; i128 doesn't fit a JS number
+  txHash          String
+  ledger          Int
+  createdAt       DateTime
+
+  @@index([from, ledger])
+  @@index([to, ledger])
+  @@index([tokenContractId, ledger])
+}

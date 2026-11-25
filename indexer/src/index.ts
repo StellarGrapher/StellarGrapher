@@ -6,9 +6,11 @@ import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
 import {
   decodeContractCreation,
   decodeInvocation,
+  decodeTokenEvent,
   extractEvents,
   extractInvocationReturnValue,
   extractStorageChanges,
+  type DecodedTokenEvent,
 } from "./decode.js";
 
 // ---------------------------------------------------------------------------
@@ -266,6 +268,28 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
       })),
     });
     metricRowsWritten.inc({ table: "contractEventRecord" }, eventsResult.count);
+
+    const tokenEvents = events
+      .map((e) => decodeTokenEvent(e, tx.txHash, tx.ledger))
+      .filter((e): e is DecodedTokenEvent => e !== null);
+    if (tokenEvents.length > 0) {
+      const tokenResult = await db.tokenEvent.createMany({
+        skipDuplicates: true,
+        data: tokenEvents.map((e) => ({
+          eventId: e.eventId,
+          tokenContractId: e.tokenContractId,
+          eventType: e.eventType,
+          from: e.from,
+          to: e.to,
+          spender: e.spender,
+          amount: e.amount,
+          txHash: e.txHash,
+          ledger: e.ledger,
+          createdAt,
+        })),
+      });
+      metricRowsWritten.inc({ table: "tokenEvent" }, tokenResult.count);
+    }
   }
 }
 

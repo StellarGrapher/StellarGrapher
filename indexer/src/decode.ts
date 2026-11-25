@@ -230,6 +230,10 @@ export interface DecodedEvent {
   type: string;
   topic: string[];
   value: string;
+  /** Raw event data, kept so token events can be decoded without re-parsing the meta. */
+  data: xdr.ScVal;
+  /** Raw topics, kept so token events can read their addresses. */
+  rawTopics: xdr.ScVal[];
 }
 
 /**
@@ -280,6 +284,83 @@ function decodeEvent(
       type: event.type().name,
       topic: body.topics().map(scValToDisplay),
       value: scValToDisplay(body.data()),
+      data: body.data(),
+      rawTopics: body.topics(),
     },
   ];
+}
+
+/** SEP-41 token event names, as they appear in the first topic. */
+export const TOKEN_EVENT_NAMES = ["transfer", "mint", "burn", "approve"] as const;
+export type TokenEventName = (typeof TOKEN_EVENT_NAMES)[number];
+
+export interface DecodedTokenEvent {
+  eventId: string;
+  tokenContractId: string;
+  eventType: TokenEventName;
+  /** Address the tokens came from; null for `mint`. */
+  from: string | null;
+  /** Address the tokens went to; null for `burn`. */
+  to: string | null;
+  /** Address approved to spend, for `approve`; null otherwise. */
+  spender: string | null;
+  /** Amount as a decimal string (i128/u128 don't fit a JS number). */
+  amount: string;
+  txHash: string;
+  ledger: number;
+}
+
+function addressFromScVal(val: xdr.ScVal | undefined): string | null {
+  if (!val || val.switch().name !== "scvAddress") return null;
+  try {
+    return Address.fromScAddress(val.address()).toString();
+  } catch {
+    return null;
+  }
+}
+
+function amountFromScVal(val: xdr.ScVal | undefined): string | null {
+  if (!val) return null;
+  try {
+    const native = scValToNative(val);
+    if (typeof native === "bigint") return native.toString();
+    if (typeof native === "number" || typeof native === "string") return String(native);
+  } catch {
+    // Fall through: not a plain numeric value.
+  }
+  return null;
+}
+
+/**
+ * Decode a SEP-41 token event (`transfer`, `mint`, `burn`, `approve`) from an
+ * already-extracted contract event. SEP-41 emits `(name, from, to, ...)` as
+ * topics and the amount as the data value; `mint` has no `from` and `burn` has
+ * no `to`. Returns null for any other event.
+ */
+export function decodeTokenEvent(
+  event: DecodedEvent,
+  txHash: string,
+  ledger: number
+): DecodedTokenEvent | null {
+  const name = event.topic[0];
+  if (!name || !(TOKEN_EVENT_NAMES as readonly string[]).includes(name)) return null;
+
+  const amount = amountFromScVal(event.data);
+  if (amount === null) return null;
+
+  const from = name === "mint" ? null : addressFromScVal(event.rawTopics[1]);
+  const to = name === "burn" ? null : addressFromScVal(event.rawTopics[2]);
+
+  return {
+    eventId: event.eventId,
+    tokenContractId: event.contractId,
+    eventType: name as TokenEventName,
+    from,
+    to,
+    // `approve` topics are (approve, from, spender, live_until_ledger).
+    spender: name === "approve" ? to : null,
+    amount,
+    txHash,
+    ledger,
+  };
 }

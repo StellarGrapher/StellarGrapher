@@ -170,6 +170,57 @@ export async function getIndexedEvents(
   };
 }
 
+export interface IndexedTokenEvent {
+  eventId: string;
+  tokenContractId: string;
+  eventType: string;
+  from: string | null;
+  to: string | null;
+  spender: string | null;
+  amount: string;
+  txHash: string;
+  ledger: number;
+  createdAt: string;
+}
+
+/**
+ * One page of an account's SEP-41 token events (transfer, mint, burn, approve)
+ * since the indexer started, newest first. `before` continues from the cursor a
+ * previous page returned.
+ */
+export async function getIndexedTokenTransfers(
+  accountId: string,
+  { limit, before }: PageRequest
+): Promise<HistoryPage<IndexedTokenEvent>> {
+  if (!isIndexerConfigured()) return { items: [], nextCursor: null };
+  const { rows } = await getPool().query(
+    `SELECT id, "eventId", "tokenContractId", "eventType", "from", "to", spender, amount,
+            "txHash", ledger, "createdAt"
+     FROM "TokenEvent"
+     WHERE ("from" = $1 OR "to" = $1)
+       AND ($2::int IS NULL OR (ledger, id) < ($2::int, $3::text))
+     ORDER BY ledger DESC, id DESC
+     LIMIT $4`,
+    [accountId, before?.ledger ?? null, before?.id ?? null, limit + 1]
+  );
+  const page = takePage(rows, limit);
+  return {
+    items: page.rows.map((r) => ({
+      eventId: r.eventId,
+      tokenContractId: r.tokenContractId,
+      eventType: r.eventType,
+      from: r.from,
+      to: r.to,
+      spender: r.spender,
+      amount: r.amount,
+      txHash: r.txHash,
+      ledger: r.ledger,
+      createdAt: r.createdAt.toISOString(),
+    })),
+    nextCursor: page.nextCursor,
+  };
+}
+
 export interface IndexedStorageEntry {
   durability: string;
   keyDisplay: string;
