@@ -9,12 +9,33 @@ export const metadata: Metadata = {
     "Decode raw base64 Stellar/Soroban XDR — transaction envelopes, results, meta, ledger entries and keys, contract spec entries, and ScVals.",
 };
 
+const DEFAULT_MAX_XDR_INPUT_BYTES = 1024 * 1024;
+
+function maxXdrInputBytes(): number {
+  const raw = process.env.XDR_MAX_INPUT_BYTES;
+  if (!raw) return DEFAULT_MAX_XDR_INPUT_BYTES;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_XDR_INPUT_BYTES;
+}
+
 interface Props {
   searchParams: { input?: string };
 }
 
 export default async function XdrPage({ searchParams }: Props) {
   const input = searchParams.input ? base64FromQueryParam(searchParams.input) : undefined;
+
+  if (input && Buffer.byteLength(input, "utf8") > maxXdrInputBytes()) {
+    return (
+      <div>
+        <h1 className="text-2xl font-bold mb-1">XDR Decoder</h1>
+        <p className="text-prism-muted text-sm mb-6 max-w-2xl">
+          The provided XDR input exceeds the maximum allowed size. Please submit a smaller payload.
+        </p>
+      </div>
+    );
+  }
+
   const result = input ? await decodeXdrAction(input) : null;
 
   return (
