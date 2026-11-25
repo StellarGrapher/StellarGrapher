@@ -41,6 +41,7 @@ function requirePositiveInt(name: string, fallback: number): number {
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
 const POLL_INTERVAL_MS = requirePositiveInt("POLL_INTERVAL_MS", 5000);
 const HEALTH_PORT = requirePositiveInt("HEALTH_PORT", 8080);
+const METRICS_LISTEN_ADDR = process.env.METRICS_LISTEN_ADDR?.trim() || "127.0.0.1:9090";
 const MAX_LEDGER_LAG = requirePositiveInt("HEALTH_MAX_LEDGER_LAG", 60);
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 60_000;
@@ -65,15 +66,21 @@ export const metricRowsWritten = new Counter({
   registers: [metricsRegistry],
 });
 
+export const metricEventsIndexed = new Counter({
+  name: "indexer_events_indexed_total",
+  help: "Total number of contract events indexed",
+  registers: [metricsRegistry],
+});
+
 export const metricLag = new Gauge({
-  name: "indexer_ledger_lag",
+  name: "indexer_lag_ledgers",
   help: "Current lag between the indexer cursor and the network latest ledger",
   registers: [metricsRegistry],
 });
 
-export const metricPollErrors = new Counter({
-  name: "indexer_poll_errors_total",
-  help: "Total number of poll errors encountered",
+export const metricErrors = new Counter({
+  name: "indexer_errors_total",
+  help: "Total number of indexer errors encountered",
   registers: [metricsRegistry],
 });
 
@@ -160,14 +167,96 @@ function startHealthServer(): Server {
       res.end(metrics);
       return;
     }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
     res.writeHead(404).end();
   });
   httpServer.listen(HEALTH_PORT, () => {
     console.log(
-      `[indexer] health endpoint listening on port ${HEALTH_PORT} (GET /healthz, GET /metrics)`
+      `[indexer] health endpoint listening on port ${HEALTH_PORT} (GET /healthz)`
     );
   });
   return httpServer;
+}
+
+function startMetricsServer(): Server {
+  const httpServer = createServer(async (req, res) => {
+    const path = req.url?.split("?")[0];
+    if (req.method !== "GET") {
+      res.writeHead(405).end();
+      return;
+    }
+    if (path === "/metrics") {
+      const metrics = await metricsRegistry.metrics();
+      res.writeHead(200, { "content-type": metricsRegistry.contentType });
+      res.end(metrics);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  const [host, port] = splitListenAddr(METRICS_LISTEN_ADDR);
+  httpServer.listen(port, host, () => {
+    console.log(`[indexer] metrics endpoint listening on ${host}:${port} (GET /metrics)`);
+  });
+  return httpServer;
+}
+
+/** Split a `host:port` listen address, defaulting the host to localhost. */
+export function splitListenAddr(addr: string): [string, number] {
+  const idx = addr.lastIndexOf(":");
+  const host = idx === -1 ? "127.0.0.1" : addr.slice(0, idx) || "127.0.0.1";
+  const port = Number(idx === -1 ? addr : addr.slice(idx + 1));
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    console.error(`[indexer] fatal: METRICS_LISTEN_ADDR must be host:port, got "${addr}"`);
+    process.exit(1);
+  }
+  return [host, port];
 }
 
 function requestShutdown(signal: NodeJS.Signals): void {
@@ -294,6 +383,7 @@ export async function processTransaction(
       })),
     });
     metricRowsWritten.inc({ table: "contractEventRecord" }, eventsResult.count);
+    metricEventsIndexed.inc(eventsResult.count);
   }
 }
 
@@ -411,6 +501,7 @@ async function main(): Promise<void> {
   console.log(`[indexer] starting at ledger ${cursor} (network is at ${network.latestLedger})`);
 
   const healthServer = startHealthServer();
+  const metricsServer = startMetricsServer();
   process.once("SIGTERM", requestShutdown);
   process.once("SIGINT", requestShutdown);
 
@@ -449,7 +540,7 @@ async function main(): Promise<void> {
     } catch (err) {
       consecutiveFailures++;
       health.lastPollFailed = true;
-      metricPollErrors.inc();
+      metricErrors.inc();
       delayMs = backoffDelay(consecutiveFailures);
       console.error(
         `[indexer] poll error (failure ${consecutiveFailures}), retrying in ${delayMs}ms:`,
@@ -462,6 +553,7 @@ async function main(): Promise<void> {
   console.log("[indexer] shutting down");
   await setCursor(cursor, paginationCursor);
   healthServer.close();
+  metricsServer.close();
   await prisma.$disconnect();
   process.exit(0);
 }

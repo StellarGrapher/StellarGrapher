@@ -41,6 +41,7 @@ docker compose up
 | `SOROBAN_RPC_URL`    | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint to poll        |
 | `POLL_INTERVAL_MS`   | `5000`                               | Milliseconds between poll cycles     |
 | `HEALTH_PORT`        | `8080`                               | Port for the `GET /healthz` endpoint |
+| `METRICS_LISTEN_ADDR` | `127.0.0.1:9090`                    | Listen address (`host:port`) for the Prometheus `GET /metrics` endpoint |
 | `HEALTH_MAX_LEDGER_LAG` | `60`                              | Ledgers behind the network before `/healthz` returns 503 |
 | `INDEXER_START_LEDGER` | *(latest ledger)*                  | First ledger to index on a fresh database; must be inside the RPC node's retention window. Ignored once a cursor exists |
 
@@ -142,6 +143,19 @@ One row per ledger range the live indexer skipped without indexing, because the 
 ```
 
 It returns `200` when the last poll succeeded and `lag` (`latestLedger - cursor`) is at most `HEALTH_MAX_LEDGER_LAG`. Otherwise it returns `503`. The Compose file uses this endpoint for the indexer's healthcheck.
+
+## Metrics Endpoint
+
+`GET /metrics` on `METRICS_LISTEN_ADDR` (default `http://localhost:9090/metrics`) returns Prometheus text format:
+
+| Metric | Type | Description |
+| ------ | ---- | ----------- |
+| `indexer_ledgers_processed_total` | counter | Ledgers processed by the indexer |
+| `indexer_events_indexed_total` | counter | Contract events indexed |
+| `indexer_errors_total` | counter | Errors encountered while polling/indexing |
+| `indexer_lag_ledgers` | gauge | Ledgers between the indexer cursor and the network latest ledger |
+
+Default Node.js process metrics are also exposed.
 
 ## Retention Gap
 
