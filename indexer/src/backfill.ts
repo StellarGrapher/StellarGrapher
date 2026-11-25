@@ -5,7 +5,7 @@ import {
   findIncompleteBackfill,
   clearBackfillCursor,
 } from "./db.js";
-import { PAGE_LIMIT, processTransaction, server } from "./index.js";
+import { PAGE_LIMIT, insertTransactions, server } from "./index.js";
 
 /** Persist the checkpoint at least every this many ledgers. */
 export const CHECKPOINT_INTERVAL = 100;
@@ -57,15 +57,18 @@ export async function backfill(
 
     let lastLedger = state.lastLedger;
     let reachedEnd = false;
+    const page: typeof response.transactions = [];
     for (const tx of response.transactions) {
       if (tx.ledger > toLedger) {
         reachedEnd = true;
         break;
       }
       if (tx.ledger < fromLedger) continue;
-      await processTransaction(tx);
+      page.push(tx);
       lastLedger = Math.max(lastLedger, tx.ledger);
     }
+    // One createMany per table for the whole page instead of one per transaction.
+    await insertTransactions(page);
 
     if (reachedEnd) {
       await clearBackfillCursor();
