@@ -8,6 +8,22 @@ export const dynamic = "force-dynamic";
 
 interface Params { params: { id: string } }
 
+const DEFAULT_RATE_LIMIT_MAX_ENTRIES = 10_000;
+
+function resolveRateLimitMaxEntries(): number {
+  const raw = process.env.RATE_LIMIT_MAX_ENTRIES?.trim();
+  if (!raw) {
+    return DEFAULT_RATE_LIMIT_MAX_ENTRIES;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_RATE_LIMIT_MAX_ENTRIES;
+  }
+
+  return parsed;
+}
+
 function resolveAllowedOrigin(req: Request): string | null {
   const configured = process.env.CORS_ALLOWED_ORIGINS?.trim();
   const origin = req.headers.get("origin");
@@ -51,7 +67,10 @@ export async function OPTIONS(req: Request) {
 export async function GET(req: Request, { params }: Params) {
   const cors = corsHeaders(req);
 
-  const limited = rateLimitRequest(req, { scope: "contract-invocations" });
+  const limited = rateLimitRequest(req, {
+    scope: "contract-invocations",
+    maxEntries: resolveRateLimitMaxEntries(),
+  });
   if (limited) {
     for (const [key, value] of Object.entries(cors)) {
       limited.headers.set(key, value);
