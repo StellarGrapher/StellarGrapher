@@ -58,6 +58,9 @@ model Invocation {
 model Contract {
   contractId       String   @id
   creator          String
+  // Account that signed the deploying invokeHostFunction operation (the
+  // operation source, or the transaction source when it inherits one).
+  deployerAccountId String?
   deploymentLedger Int
   deploymentTxHash String   @unique
   createdAt        DateTime
@@ -66,6 +69,7 @@ model Contract {
   expiresAtLedger  Int?
 
   @@index([creator])
+  @@index([deployerAccountId])
 }
 
 // One row per observed change to a contract storage entry (not just the

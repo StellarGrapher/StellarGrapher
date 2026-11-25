@@ -337,6 +337,7 @@ export async function processTransaction(
           {
             contractId: contract.contractId,
             creator: contract.creator,
+            deployerAccountId: contract.deployerAccountId ?? sourceAccount,
             deploymentLedger: tx.ledger,
             deploymentTxHash: tx.txHash,
             createdAt,

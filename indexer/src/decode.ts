@@ -1,4 +1,11 @@
-import { Address, StrKey, xdr, scValToNative, type rpc } from "@stellar/stellar-sdk";
+import {
+  Address,
+  StrKey,
+  encodeMuxedAccountToAddress,
+  xdr,
+  scValToNative,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 function toDisplaySafe(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
@@ -75,6 +82,21 @@ export function extractInvocationReturnValue(meta: xdr.TransactionMeta): string 
 export interface DecodedContractCreation {
   contractId: string;
   creator: string;
+  // Account that signed the deploying invokeHostFunction operation, when the
+  // operation carries its own source account. Null when it inherits the
+  // transaction source (the common case), so callers fall back to that.
+  deployerAccountId: string | null;
+}
+
+/** Source account of an operation, or null when it inherits the tx source. */
+function operationSourceAccount(op: xdr.Operation): string | null {
+  try {
+    const source = op.sourceAccount();
+    if (!source) return null;
+    return encodeMuxedAccountToAddress(source);
+  } catch {
+    return null;
+  }
 }
 
 /** Ledger key for a contract's instance entry, used to look up its TTL. */
@@ -116,11 +138,16 @@ export function decodeContractCreation(
 ): DecodedContractCreation | null {
   try {
     const tx = unwrapTx(envelope);
+    let deployerAccountId: string | null = null;
     const createsContract = tx.operations().some((op) => {
       if (op.body().switch().name !== "invokeHostFunction") return false;
       const hostFunction = op.body().invokeHostFunctionOp().hostFunction();
       const kind = hostFunction.switch().name;
-      return kind === "hostFunctionTypeCreateContract" || kind === "hostFunctionTypeCreateContractV2";
+      if (kind !== "hostFunctionTypeCreateContract" && kind !== "hostFunctionTypeCreateContractV2") {
+        return false;
+      }
+      deployerAccountId = operationSourceAccount(op);
+      return true;
     });
     if (!createsContract) return null;
     const returnValue = sorobanReturnValue(meta);
@@ -129,6 +156,7 @@ export function decodeContractCreation(
     return {
       contractId: Address.fromScAddress(returnValue.address()).toString(),
       creator,
+      deployerAccountId,
     };
   } catch {
     return null;
