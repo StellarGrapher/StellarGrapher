@@ -47,6 +47,9 @@ jobs:
           cache-dependency-path: indexer/package-lock.json
       - run: npm ci
       - run: npx prisma generate
+      # Fails when schema.prisma and the committed migrations diverge, so a
+      # schema change without a migration can't land.
+      - run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "file:./shadow.db" --exit-code
       - run: npx tsc --noEmit
       - run: npm run lint
       - run: npm test

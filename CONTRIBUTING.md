@@ -51,6 +51,36 @@ npm run build           # Compile TypeScript
 npm run start           # Run compiled output
 ```
 
+#### Changing the Prisma schema
+
+`indexer/prisma/schema.prisma` and the committed migrations in
+`indexer/prisma/migrations/` must stay in sync; CI fails otherwise. After
+editing the schema, generate a migration and commit it with your change:
+
+```bash
+cd indexer
+# Requires DATABASE_URL to point at a dev Postgres database.
+npx prisma migrate dev --name describe_your_change
+```
+
+This creates `prisma/migrations/<timestamp>_describe_your_change/migration.sql`.
+Review the generated SQL, commit it alongside `schema.prisma`, and run
+`npx prisma generate` so the client types match.
+
+To check locally that nothing is missing before pushing:
+
+```bash
+cd indexer
+npx prisma migrate diff \
+  --from-migrations prisma/migrations \
+  --to-schema-datamodel prisma/schema.prisma \
+  --shadow-database-url "file:./shadow.db" \
+  --exit-code
+```
+
+An exit code of `0` means the schema and migrations agree; `2` means a
+migration is missing.
+
 ### Contracts (`contracts/`)
 
 ```bash
