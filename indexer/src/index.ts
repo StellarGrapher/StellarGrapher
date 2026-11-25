@@ -283,19 +283,50 @@ export interface PageProgress {
   lastLedger: number;
   paginationCursor: string | null;
   gap?: { fromLedger: number; toLedger: number; reason: string };
+  /** Every gap this page skipped, when more than one applies. */
+  gaps?: { fromLedger: number; toLedger: number; reason: string }[];
+}
+
+/** The subset of `rpc.Server` the poll loop needs; injectable so tests can mock RPC responses. */
+export type RpcClient = Pick<typeof server, "getTransactions" | "getLatestLedger" | "getHealth">;
+
+/**
+ * Warn when a page stops short of the ledgers it was asked to cover. A short page
+ * that ends before `latestLedger` means the RPC node returned less history than it
+ * reported (e.g. a retention-window cutoff), so the skipped ledgers are recorded as
+ * a gap instead of being dropped silently.
+ */
+export function partialPageGap(
+  transactions: rpc.Api.TransactionInfo[],
+  lastLedger: number,
+  latestLedger: number
+): PageProgress["gap"] | undefined {
+  if (transactions.length === 0 || lastLedger >= latestLedger) return undefined;
+  const fromLedger = lastLedger + 1;
+  console.warn(
+    `[indexer] RPC returned a partial page: ${transactions.length} transaction(s) ending at ledger ` +
+      `${lastLedger}, but the network is at ${latestLedger}. Ledgers ${fromLedger}-${latestLedger} ` +
+      `were not returned (retention window cutoff?) — recording a gap instead of dropping them silently.`
+  );
+  return {
+    fromLedger,
+    toLedger: latestLedger,
+    reason: `RPC returned a partial page ending at ledger ${lastLedger} (network at ${latestLedger})`,
+  };
 }
 
 /** Fetch one transaction page from the persisted ledger and RPC pagination cursor. Writes nothing. */
-async function fetchPage(
+export async function fetchPage(
   cursor: number,
   paginationCursor: string | null,
-  latestLedger: number
+  latestLedger: number,
+  client: RpcClient = server
 ): Promise<{ transactions: rpc.Api.TransactionInfo[]; progress: PageProgress }> {
   let res;
   try {
     res = paginationCursor
-      ? await server.getTransactions({ pagination: { limit: PAGE_LIMIT, cursor: paginationCursor } })
-      : await server.getTransactions({ startLedger: cursor + 1, pagination: { limit: PAGE_LIMIT } });
+      ? await client.getTransactions({ pagination: { limit: PAGE_LIMIT, cursor: paginationCursor } })
+      : await client.getTransactions({ startLedger: cursor + 1, pagination: { limit: PAGE_LIMIT } });
   } catch (err) {
     const message = errorMessage(err);
 
@@ -335,11 +366,14 @@ async function fetchPage(
   if (res.transactions.length === PAGE_LIMIT && (!res.cursor || res.cursor === paginationCursor)) {
     throw new Error("RPC returned a full page without advancing its transaction cursor");
   }
+  const lastLedger = Math.max(cursor, ...res.transactions.map((t) => t.ledger));
+  const gap = partialPageGap(res.transactions, lastLedger, latestLedger);
   return {
     transactions: res.transactions,
     progress: {
-      lastLedger: Math.max(cursor, ...res.transactions.map((t) => t.ledger)),
+      lastLedger,
       paginationCursor: res.transactions.length === PAGE_LIMIT ? res.cursor : null,
+      ...(gap ? { gap, gaps: [gap] } : {}),
     },
   };
 }
@@ -359,7 +393,8 @@ export async function commitPage(
         await processTransaction(tx, db);
       }
       if (progress.gap) {
-        await db.indexerGap.create({ data: progress.gap });
+        // A page can carry both a retention gap and a partial-page gap; keep both.
+        await db.indexerGap.createMany({ data: progress.gaps ?? [progress.gap] });
       }
       await setCursor(progress.lastLedger, progress.paginationCursor, db);
     },
