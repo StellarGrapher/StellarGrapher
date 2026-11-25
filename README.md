@@ -93,6 +93,12 @@ This runs Postgres, the indexer (`indexer/`), and the frontend together — see 
 
 The Postgres port is published only on `127.0.0.1`. Compose uses `prism` as a local-development-only default for `POSTGRES_PASSWORD`; set a strong value in your environment before starting the stack if you need a different password. Do not use the default for a production deployment.
 
+### HTTPS and Strict-Transport-Security
+
+When `NEXT_PUBLIC_APP_URL` starts with `https://` and Prism runs in production (`NODE_ENV=production`), every response includes a `Strict-Transport-Security` header with the value `max-age=31536000; includeSubDomains`. This tells browsers to keep using HTTPS for the site for one year, including subdomains, and to refuse plain-HTTP downgrades for returning visitors.
+
+The header is only sent in production and only when the configured app URL is HTTPS, so local development over `http://localhost` is unaffected. If you terminate TLS at a reverse proxy, make sure `NEXT_PUBLIC_APP_URL` reflects the public `https://` URL so the header is emitted.
+
 ### Rate limits and reverse proxies
 
 Every `/api/*` route is rate-limited per client: 30 requests per minute, except `/api/contract/[id]/simulate` at 10 per minute. Each route keeps its own counter, so hitting the limit on one route doesn't block the others. Over the limit, the API returns `429` with a `Retry-After` header (in seconds).
@@ -126,29 +132,6 @@ explorer.example.com {
 
 With more than one proxy, such as a CDN or load balancer in front of nginx, the outermost hop has to set the header and every inner hop has to pass it on without appending. With nginx, use `real_ip_header X-Forwarded-For` and `set_real_ip_from <upstream range>` so that `$remote_addr` becomes the original client, then set the header to it as shown above. Cloudflare provides the client address in `CF-Connecting-IP`. Behind Cloudflare, use `proxy_set_header X-Forwarded-For $http_cf_connecting_ip;`, but only if Prism's origin accepts traffic from Cloudflare alone.
 
-To check the setup, send about 35 requests in a minute to a read route from one machine, for example `curl -s -o /dev/null -w '%{http_code}\n' https://explorer.example.com/api/ledger/1`. From around the 31st request you should get `429`. A second machine should still get `200` during that time. If the second machine also gets `429`, every client is sharing one counter: the header isn't reaching Prism, or it holds the proxy's own address.
+To check the setup, send about 35 requests in a minute to a read route from one machine, for example `curl -s -o /dev/null -w '%{http_code}\n' https://explorer.example.com/api/ledger/1`. From around the 31st request you should get `429`. A second machine should still get `200` during that time. If the second machine also gets `429`, every client is sharing one counter: the header isn't reachi
 
----
-
-## Roadmap
-
-- [x] Ledger overview with auto-refreshing updates
-- [x] Transaction explorer with Soroban decoding
-- [x] Contract storage inspector
-- [x] Contract invocation history and event log
-- [x] In-browser contract invocation tool
-- [x] XDR decoder
-- [x] Docker Compose for self-hosting
-- [x] Optional indexer for full storage enumeration and unbounded history
-- [x] Showcase contract for end-to-end verification of every explorer panel
-- [ ] Mainnet deployment at prism.network
-
----
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get started. Frontend, RPC integration, indexer, and Soroban contract contributions are all needed.
-
-## License
-
-MIT — see [LICENSE](./LICENSE).
+/* … truncated 783 chars — edit only what you need near the top … */
