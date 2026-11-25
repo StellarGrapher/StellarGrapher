@@ -8,6 +8,7 @@ import {
   decodeInvocation,
   extractEvents,
   extractInvocationReturnValue,
+  extractInvocationStorageChanges,
   extractStorageChanges,
 } from "./decode.js";
 
@@ -211,6 +212,33 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
       skipDuplicates: true,
     });
     metricRowsWritten.inc({ table: "invocation" }, invocationResult.count);
+
+    if (tx.status === "SUCCESS") {
+      const invocationChanges = extractInvocationStorageChanges(tx.resultMetaXdr);
+      if (invocationChanges.length > 0) {
+        const record = await db.invocation.findUnique({
+          where: { txHash: tx.txHash },
+          select: { id: true },
+        });
+        if (record) {
+          const changeResult = await db.invocationStorageChange.createMany({
+            skipDuplicates: true,
+            data: invocationChanges.map((c) => ({
+              invocationId: record.id,
+              contractId: c.contractId,
+              durability: c.durability,
+              key: c.key,
+              valueBefore: c.valueBefore,
+              valueAfter: c.valueAfter,
+              ledger: tx.ledger,
+              txHash: tx.txHash,
+              createdAt,
+            })),
+          });
+          metricRowsWritten.inc({ table: "invocationStorageChange" }, changeResult.count);
+        }
+      }
+    }
   }
 
   if (tx.status === "SUCCESS" && sourceAccount) {

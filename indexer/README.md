@@ -106,6 +106,20 @@ Append-only log of every observed change to a contract storage entry. The "curre
 | `ledger`      | `Int`    | Ledger sequence number                           |
 | `txHash`      | `String` | Transaction hash                                 |
 
+### `invocation_storage_changes`
+Per-invocation before/after view of the contract storage entries an invocation modified, derived from the transaction meta (`ledgerEntryState` = before, `created`/`updated`/`removed` = after). Query by `invocationId` to see exactly what a call changed.
+
+| Column         | Type      | Description                                              |
+| -------------- | --------- | -------------------------------------------------------- |
+| `invocationId` | `String`  | `Invocation.id` of the call that made the change         |
+| `contractId`   | `String`  | Contract address                                         |
+| `durability`   | `String`  | `persistent` / `temporary` / `instance`                  |
+| `key`          | `String`  | Human-readable decoded key (`__instance__` for the instance entry) |
+| `valueBefore`  | `String?` | Decoded value before the invocation (null when created)  |
+| `valueAfter`   | `String?` | Decoded value after the invocation (null when removed)   |
+| `ledger`       | `Int`     | Ledger sequence number                                   |
+| `txHash`       | `String`  | Transaction hash                                         |
+
 ### `contract_event_records`
 One row per contract event emitted.
 
