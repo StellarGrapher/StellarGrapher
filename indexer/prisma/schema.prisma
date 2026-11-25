@@ -69,6 +69,9 @@ model Invocation {
   successful    Boolean
   sourceAccount String
   returnValue   String?
+  // Base64 envelope XDR the decoded columns above were derived from, so they
+  // can be re-decoded after a decoder change without re-fetching from RPC.
+  rawXdr        String?
 
   @@unique([txHash])
   @@index([contractId, ledger])
@@ -119,6 +122,9 @@ model ContractEventRecord {
   txHash     String
   ledger     Int
   createdAt  DateTime
+  // Base64 ContractEvent XDR the decoded columns above were derived from.
+  // Null for synthesized `contract_created` events, which have no XDR.
+  rawXdr     String?
 
   @@index([contractId, ledger])
 }
