@@ -119,17 +119,32 @@ export default function ExplorerPage() {
             {filteredContracts.length === 0 ? (
               <p className="text-sm text-gray-500">No contracts found.</p>
             ) : (
-              <ul className="divide-y divide-gray-200 rounded border border-gray-200">
-                {filteredContracts.map((c) => (
-                  <li
-                    key={c.id}
-                    className="flex items-center justify-between gap-4 px-4 py-3"
-                  >
-                    <span className="text-sm">{c.name ?? 'Unnamed contract'}</span>
-                    <Identifier value={c.id} label="contract ID" />
-                  </li>
-                ))}
-              </ul>
+              <div className="max-h-[28rem] overflow-auto rounded border border-gray-200">
+                <table className="w-full border-collapse text-left">
+                  <thead className="sticky top-0 z-10 bg-white shadow-sm">
+                    <tr className="border-b border-gray-200">
+                      <th scope="col" className="px-4 py-3 text-sm font-medium">
+                        Name
+                      </th>
+                      <th scope="col" className="px-4 py-3 text-right text-sm font-medium">
+                        Contract ID
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {filteredContracts.map((c) => (
+                      <tr key={c.id}>
+                        <td className="px-4 py-3 text-sm">
+                          {c.name ?? 'Unnamed contract'}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Identifier value={c.id} label="contract ID" />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
 
@@ -140,20 +155,33 @@ export default function ExplorerPage() {
             {filteredTransactions.length === 0 ? (
               <p className="text-sm text-gray-500">No transactions found.</p>
             ) : (
-              <ul className="divide-y divide-gray-200 rounded border border-gray-200">
-                {filteredTransactions.map((t) => (
-                  <li
-                    key={t.hash}
-                    className="flex items-center justify-between gap-4 px-4 py-3"
-                  >
-                    <span className="text-sm text-gray-500">
-                      {t.status ?? 'unknown'}
-                      {typeof t.ledger === 'number' ? ` · ledger ${t.ledger}` : ''}
-                    </span>
-                    <Identifier value={t.hash} label="transaction hash" />
-                  </li>
-                ))}
-              </ul>
+              <div className="max-h-[28rem] overflow-auto rounded border border-gray-200">
+                <table className="w-full border-collapse text-left">
+                  <thead className="sticky top-0 z-10 bg-white shadow-sm">
+                    <tr className="border-b border-gray-200">
+                      <th scope="col" className="px-4 py-3 text-sm font-medium">
+                        Status
+                      </th>
+                      <th scope="col" className="px-4 py-3 text-right text-sm font-medium">
+                        Transaction hash
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {filteredTransactions.map((t) => (
+                      <tr key={t.hash}>
+                        <td className="px-4 py-3 text-sm text-gray-500">
+                          {t.status ?? 'unknown'}
+                          {typeof t.ledger === 'number' ? ` · ledger ${t.ledger}` : ''}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Identifier value={t.hash} label="transaction hash" />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
 
@@ -164,19 +192,32 @@ export default function ExplorerPage() {
             {filteredAccounts.length === 0 ? (
               <p className="text-sm text-gray-500">No accounts found.</p>
             ) : (
-              <ul className="divide-y divide-gray-200 rounded border border-gray-200">
-                {filteredAccounts.map((a) => (
-                  <li
-                    key={a.address}
-                    className="flex items-center justify-between gap-4 px-4 py-3"
-                  >
-                    <span className="text-sm text-gray-500">
-                      {a.balance ?? '—'}
-                    </span>
-                    <Identifier value={a.address} label="account address" />
-                  </li>
-                ))}
-              </ul>
+              <div className="max-h-[28rem] overflow-auto rounded border border-gray-200">
+                <table className="w-full border-collapse text-left">
+                  <thead className="sticky top-0 z-10 bg-white shadow-sm">
+                    <tr className="border-b border-gray-200">
+                      <th scope="col" className="px-4 py-3 text-sm font-medium">
+                        Balance
+                      </th>
+                      <th scope="col" className="px-4 py-3 text-right text-sm font-medium">
+                        Address
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {filteredAccounts.map((a) => (
+                      <tr key={a.address}>
+                        <td className="px-4 py-3 text-sm text-gray-500">
+                          {a.balance ?? '—'}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <Identifier value={a.address} label="account address" />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
         </>

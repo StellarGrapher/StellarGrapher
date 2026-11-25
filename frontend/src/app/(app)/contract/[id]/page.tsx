@@ -83,6 +83,7 @@ export default async function ContractPage({ params }: Props) {
             limit={INVOCATION_PAGE_SIZE}
             derivedFromEvents={rpcFallback}
             title="Recent Invocations"
+            stickyHeader
           />
         </section>
 
@@ -96,6 +97,7 @@ export default async function ContractPage({ params }: Props) {
             rpcFallback={rpcFallback}
             specs={wasm?.events}
             title="Events"
+            stickyHeader
           />
         </section>
       </div>
