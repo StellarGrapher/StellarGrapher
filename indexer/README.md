@@ -43,6 +43,20 @@ docker compose up
 | `HEALTH_PORT`        | `8080`                               | Port for the `GET /healthz` endpoint |
 | `HEALTH_MAX_LEDGER_LAG` | `60`                              | Ledgers behind the network before `/healthz` returns 503 |
 | `INDEXER_START_LEDGER` | *(latest ledger)*                  | First ledger to index on a fresh database; must be inside the RPC node's retention window. Ignored once a cursor exists |
+| `ADMIN_TOKEN`        | *(unset — admin API disabled)*       | Bearer token required by `POST /admin/reindex` |
+
+## Admin Re-indexing
+
+`POST /admin/reindex` re-processes a ledger range without restarting the indexer or moving the live cursor:
+
+```bash
+curl -X POST http://localhost:8080/admin/reindex \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"fromLedger": 1000, "toLedger": 2000, "contractId": "C..."}'
+```
+
+`contractId` is optional; when set, only transactions that invoke, create, or emit events for that contract are re-processed. Progress is logged per ledger. Writes are idempotent (`skipDuplicates`), so re-indexing never duplicates rows and does not interfere with ongoing live indexing. Only one re-index runs at a time (a concurrent request gets `409`); `401` means a missing or wrong token, `400` a malformed body.
 
 ## How It Works
 
