@@ -43,6 +43,7 @@ docker compose up
 | `HEALTH_PORT`        | `8080`                               | Port for the `GET /healthz` endpoint |
 | `HEALTH_MAX_LEDGER_LAG` | `60`                              | Ledgers behind the network before `/healthz` returns 503 |
 | `INDEXER_START_LEDGER` | *(latest ledger)*                  | First ledger to index on a fresh database; must be inside the RPC node's retention window. Ignored once a cursor exists |
+| `SLOW_QUERY_MS`      | `500`                                | Log queries slower than this many milliseconds (params redacted) |
 
 ## How It Works
 

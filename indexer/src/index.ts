@@ -2,7 +2,7 @@ import { rpc, encodeMuxedAccountToAddress, type xdr } from "@stellar/stellar-sdk
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
-import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
+import { prisma, findCursor, seedCursor, setCursor, startPoolMonitor, type Db } from "./db.js";
 import {
   decodeContractCreation,
   decodeInvocation,
@@ -383,6 +383,7 @@ async function main(): Promise<void> {
   console.log(`[indexer] starting at ledger ${cursor} (network is at ${network.latestLedger})`);
 
   const healthServer = startHealthServer();
+  const stopPoolMonitor = startPoolMonitor();
   process.once("SIGTERM", requestShutdown);
   process.once("SIGINT", requestShutdown);
 
@@ -433,6 +434,7 @@ async function main(): Promise<void> {
 
   console.log("[indexer] shutting down");
   await setCursor(cursor, paginationCursor);
+  stopPoolMonitor();
   healthServer.close();
   await prisma.$disconnect();
   process.exit(0);
