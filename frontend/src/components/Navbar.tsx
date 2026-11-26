@@ -3,6 +3,7 @@ import SearchBar from "./SearchBar";
 import NavLinks from "./NavLinks";
 import { NetworkSelector } from "./NetworkSelector";
 import FavouritesDropdown from "./FavouritesDropdown";
+import ShortcutsHint from "./ShortcutsHint";
 import { config, type StellarNetwork } from "@/lib/config";
 
 /**
@@ -49,6 +50,7 @@ export default function Navbar() {
           >
             GitHub
           </a>
+          <ShortcutsHint />
         </div>
       </div>
     </nav>
