@@ -1,4 +1,11 @@
-import { Address, StrKey, xdr, scValToNative } from "@stellar/stellar-sdk";
+import {
+  Address,
+  StrKey,
+  encodeMuxedAccountToAddress,
+  xdr,
+  scValToNative,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 function toDisplaySafe(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
@@ -79,6 +86,51 @@ export interface DecodedContractCreation {
   salt: string;
   /** Hex-encoded WASM hash of the uploaded executable. */
   wasmHash: string;
+  /** Operation-specific deployer, or null when it inherits the transaction source. */
+  deployerAccountId: string | null;
+}
+
+/** Source account of an operation, or null when it inherits the transaction source. */
+function operationSourceAccount(op: xdr.Operation): string | null {
+  try {
+    const source = op.sourceAccount();
+    if (!source) return null;
+    return encodeMuxedAccountToAddress(source);
+  } catch {
+    return null;
+  }
+}
+
+/** Ledger key for a contract's instance entry, used to look up its TTL. */
+export function contractInstanceLedgerKey(contractId: string): xdr.LedgerKey {
+  return xdr.LedgerKey.contractData(
+    new xdr.LedgerKeyContractData({
+      contract: Address.fromString(contractId).toScAddress(),
+      key: xdr.ScVal.scvLedgerKeyContractInstance(),
+      durability: xdr.ContractDataDurability.persistent(),
+    })
+  );
+}
+
+/**
+ * Expiration ledger of a contract instance entry from a getLedgerEntries
+ * response, or null when the entry is absent or carries no TTL.
+ */
+export function contractExpiresAtLedger(
+  response: rpc.Api.GetLedgerEntriesResponse,
+  contractId: string
+): number | null {
+  try {
+    const wanted = contractInstanceLedgerKey(contractId).toXDR("base64");
+    for (const entry of response.entries ?? []) {
+      if (entry.key.toXDR("base64") !== wanted) continue;
+      const liveUntil = entry.liveUntilLedgerSeq;
+      return typeof liveUntil === "number" && liveUntil > 0 ? liveUntil : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 export function decodeContractCreation(
@@ -90,6 +142,7 @@ export function decodeContractCreation(
     const tx = unwrapTx(envelope);
     let salt: string | null = null;
     let wasmHash: string | null = null;
+    let deployerAccountId: string | null = null;
     for (const op of tx.operations()) {
       if (op.body().switch().name !== "invokeHostFunction") continue;
       const hostFunction = op.body().invokeHostFunctionOp().hostFunction();
@@ -105,6 +158,7 @@ export function decodeContractCreation(
       } else {
         continue;
       }
+      deployerAccountId = operationSourceAccount(op);
       break;
     }
     if (salt === null || wasmHash === null) return null;
@@ -116,6 +170,7 @@ export function decodeContractCreation(
       creator,
       salt,
       wasmHash,
+      deployerAccountId,
     };
   } catch {
     return null;
@@ -135,6 +190,10 @@ function sorobanReturnValue(meta: xdr.TransactionMeta): xdr.ScVal | null {
 export interface DecodedStorageChange {
   contractId: string;
   durability: "persistent" | "temporary" | "instance";
+  // Position of the change within the transaction's meta. Together with the
+  // tx hash it identifies the row, so reprocessing a transaction after a
+  // restart maps onto the same rows instead of colliding on the natural key.
+  changeIndex: number;
   keyDisplay: string;
   valueDisplay: string | null;
   changeType: "created" | "updated" | "removed" | "state";
@@ -162,6 +221,7 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
         out.push({
           contractId: Address.fromScAddress(cd.contract()).toString(),
           durability: cd.durability().name as "persistent" | "temporary",
+          changeIndex: out.length,
           keyDisplay: scValToDisplay(cd.key()),
           valueDisplay: null,
           changeType: "removed",
@@ -188,13 +248,14 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
       const contractId = Address.fromScAddress(cd.contract()).toString();
 
       if (isInstanceKey) {
-        out.push(...expandInstanceEntry(contractId, cd.val(), changeType));
+        out.push(...expandInstanceEntry(contractId, cd.val(), changeType, out.length));
         continue;
       }
 
       out.push({
         contractId,
         durability: cd.durability().name as "persistent" | "temporary",
+        changeIndex: out.length,
         keyDisplay: scValToDisplay(cd.key()),
         valueDisplay: scValToDisplay(cd.val()),
         changeType,
@@ -213,7 +274,8 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
 function expandInstanceEntry(
   contractId: string,
   val: xdr.ScVal,
-  changeType: DecodedStorageChange["changeType"]
+  changeType: DecodedStorageChange["changeType"],
+  startIndex: number
 ): DecodedStorageChange[] {
   if (val.switch().name !== "scvContractInstance") return [];
   const instance = val.instance();
@@ -224,6 +286,7 @@ function expandInstanceEntry(
     out.push({
       contractId,
       durability: "instance",
+      changeIndex: startIndex + out.length,
       keyDisplay: "__wasm_hash__",
       valueDisplay: executable.wasmHash().toString("hex"),
       changeType,
@@ -234,6 +297,7 @@ function expandInstanceEntry(
     out.push({
       contractId,
       durability: "instance",
+      changeIndex: startIndex + out.length,
       keyDisplay: scValToDisplay(entry.key()),
       valueDisplay: scValToDisplay(entry.val()),
       changeType,

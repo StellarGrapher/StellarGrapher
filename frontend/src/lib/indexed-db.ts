@@ -299,6 +299,51 @@ export async function getIndexedStorageEntries(contractId: string): Promise<Inde
     }));
 }
 
+export interface IndexedAccountContract {
+  contractId: string;
+  creator: string;
+  deployerAccountId: string | null;
+  deploymentLedger: number;
+  deploymentTxHash: string;
+  createdAt: string;
+}
+
+/**
+ * One page of the contracts an account deployed, newest first. `before`
+ * continues from the cursor a previous page returned.
+ */
+export async function getIndexedAccountContracts(
+  accountId: string,
+  { limit, before }: PageRequest
+): Promise<HistoryPage<IndexedAccountContract>> {
+  if (!isIndexerConfigured()) return { items: [], nextCursor: null };
+  const { rows } = await getPool().query(
+    `SELECT "contractId", creator, "deployerAccountId", "deploymentLedger",
+            "deploymentTxHash", "createdAt"
+     FROM "Contract"
+     WHERE "deployerAccountId" = $1
+       AND ($2::int IS NULL OR ("deploymentLedger", "contractId") < ($2::int, $3::text))
+     ORDER BY "deploymentLedger" DESC, "contractId" DESC
+     LIMIT $4`,
+    [accountId, before?.ledger ?? null, before?.id ?? null, limit + 1]
+  );
+  const page = takePage(
+    rows.map((r) => ({ ...r, ledger: r.deploymentLedger, id: r.contractId })),
+    limit
+  );
+  return {
+    items: page.rows.map((r) => ({
+      contractId: r.contractId,
+      creator: r.creator,
+      deployerAccountId: r.deployerAccountId,
+      deploymentLedger: r.deploymentLedger,
+      deploymentTxHash: r.deploymentTxHash,
+      createdAt: r.createdAt.toISOString(),
+    })),
+    nextCursor: page.nextCursor,
+  };
+}
+
 export interface IndexedGap {
   fromLedger: number;
   toLedger: number;

@@ -80,11 +80,18 @@ model Invocation {
 model Contract {
   contractId       String   @id
   creator          String
+  // Account that signed the deploying invokeHostFunction operation (the
+  // operation source, or the transaction source when it inherits one).
+  deployerAccountId String?
   deploymentLedger Int
   deploymentTxHash String   @unique
   createdAt        DateTime
+  // Ledger at which the contract instance entry expires (from getLedgerEntries
+  // liveUntilLedgerSeq). Null until observed or when the entry has no TTL.
+  expiresAtLedger  Int?
 
   @@index([creator])
+  @@index([deployerAccountId])
 }
 
 // One row per observed change to a contract storage entry (not just the
@@ -96,6 +103,7 @@ model StorageChange {
   id           String   @id @default(cuid())
   contractId   String
   durability   String // persistent | temporary | instance
+  changeIndex  Int // position of the change within the transaction's meta
   keyDisplay   String // human-readable decoded key ("__instance__" for the contract instance entry)
   valueDisplay String? // human-readable decoded value; null when changeType is "removed"
   changeType   String // created | updated | removed | state
@@ -103,7 +111,10 @@ model StorageChange {
   txHash       String
   createdAt    DateTime
 
-  @@unique([txHash, contractId, keyDisplay, durability, changeType])
+  // Keyed by position, not by decoded content: a transaction can touch the same
+  // key twice (state then updated), and reprocessing it after a restart must
+  // map onto the same rows so skipDuplicates can ignore them.
+  @@unique([txHash, changeIndex])
   @@index([contractId, keyDisplay, durability, ledger])
   @@index([contractId, ledger])
 }
