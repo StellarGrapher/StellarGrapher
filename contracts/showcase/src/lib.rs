@@ -300,3 +300,220 @@ impl Showcase {
 }
 
 mod test;
+
+#[cfg(test)]
+mod edge_case_tests {
+    use super::*;
+    use soroban_sdk::{
+        testutils::{Address as _, Events, Ledger},
+        vec, Address, Env, String, Symbol, TryFromVal, TryIntoVal,
+    };
+
+    fn setup(env: &Env) -> (ShowcaseClient<'static>, Address) {
+        env.mock_all_auths();
+        let contract_id = env.register(Showcase, ());
+        let client = ShowcaseClient::new(env, &contract_id);
+        let admin = Address::generate(env);
+        client.init(&admin);
+        (client, admin)
+    }
+
+    /// The deliberately failing entry point must always report `Deliberate`,
+    /// whether or not the contract has been initialized.
+    #[test]
+    fn boom_always_fails_with_deliberate() {
+        let env = Env::default();
+        let contract_id = env.register(Showcase, ());
+        let client = ShowcaseClient::new(&env, &contract_id);
+        assert_eq!(client.try_boom(), Err(Ok(Error::Deliberate)));
+
+        let (client, _) = setup(&env);
+        assert_eq!(client.try_boom(), Err(Ok(Error::Deliberate)));
+    }
+
+    /// Every storage durability and every `DataKey` variant is readable back
+    /// through the contract's own accessors.
+    #[test]
+    fn every_storage_type_round_trips() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let author = Address::generate(&env);
+        let name = Symbol::new(&env, "all");
+
+        // Instance: Admin + Counter.
+        assert_eq!(client.admin(), admin);
+        assert_eq!(client.bump(&4), 4);
+        assert_eq!(client.stats().counter, 4);
+
+        // Persistent: Note, Values, Labels.
+        assert_eq!(
+            client.put_note(&author, &name, &String::from_str(&env, "body")),
+            1
+        );
+        assert_eq!(client.note(&name).body, String::from_str(&env, "body"));
+        let values = vec![&env, -1i128, 0i128, 1i128];
+        let mut labels = Map::new(&env);
+        labels.set(Symbol::new(&env, "k"), String::from_str(&env, "v"));
+        client.store_collections(&values, &labels);
+        assert_eq!(client.stored_values(), values);
+        assert_eq!(client.stored_labels(), labels);
+
+        // Temporary: Session.
+        let who = Address::generate(&env);
+        client.start_session(&who, &10);
+        assert_eq!(client.session(&who), Some(env.ledger().sequence() + 10));
+
+        // All of it is visible in raw storage under the expected keys.
+        env.as_contract(&client.address, || {
+            let instance = env.storage().instance();
+            assert!(instance.has(&DataKey::Admin));
+            assert!(instance.has(&DataKey::Counter));
+            let persistent = env.storage().persistent();
+            assert!(persistent.has(&DataKey::Note(name.clone())));
+            assert!(persistent.has(&DataKey::Values));
+            assert!(persistent.has(&DataKey::Labels));
+            assert!(env.storage().temporary().has(&DataKey::Session(who)));
+        });
+    }
+
+    /// `DataKey::Note(name)` must not collide with the other `DataKey`
+    /// variants, nor with a note stored under a different name.
+    #[test]
+    fn storage_keys_do_not_collide() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+        let author = Address::generate(&env);
+
+        let a = Symbol::new(&env, "a");
+        let b = Symbol::new(&env, "b");
+        client.put_note(&author, &a, &String::from_str(&env, "first"));
+        client.put_note(&author, &b, &String::from_str(&env, "second"));
+
+        // Writing the compound entries leaves the notes untouched.
+        client.store_collections(&vec![&env, 1i128], &Map::new(&env));
+        assert_eq!(client.note(&a).body, String::from_str(&env, "first"));
+        assert_eq!(client.note(&b).body, String::from_str(&env, "second"));
+
+        // Deleting one note does not remove the other.
+        client.delete_note(&a);
+        assert_eq!(client.try_note(&a), Err(Ok(Error::NoSuchNote)));
+        assert_eq!(client.note(&b).body, String::from_str(&env, "second"));
+
+        // The distinct keys really are distinct in raw storage.
+        env.as_contract(&client.address, || {
+            let persistent = env.storage().persistent();
+            assert!(!persistent.has(&DataKey::Note(a)));
+            assert!(persistent.has(&DataKey::Note(b)));
+            assert!(persistent.has(&DataKey::Values));
+            assert!(persistent.has(&DataKey::Labels));
+        });
+    }
+
+    /// Every event type the contract defines is emitted with the declared
+    /// shape, including the empty-data cases.
+    #[test]
+    fn every_event_type_is_emitted() {
+        let env = Env::default();
+        let (client, admin) = setup(&env);
+        let author = Address::generate(&env);
+        let name = Symbol::new(&env, "evt");
+        let who = Address::generate(&env);
+
+        // Initialized was published by setup().
+        let initialized = Initialized { admin: admin.clone() }.to_xdr(&env, &client.address);
+        assert_eq!(env.events().all().events().first(), Some(&initialized));
+
+        client.bump(&1);
+        client.put_note(&author, &name, &String::from_str(&env, "body"));
+        client.delete_note(&name);
+        client.start_session(&who, &5);
+        client.tally(&vec![&env, 1i128, 2i128]);
+
+        let emitted = env.events().all();
+        let events = emitted.events();
+        let expected = [
+            Bumped { counter: 1 }.to_xdr(&env, &client.address),
+            CounterValue { counter: 1 }.to_xdr(&env, &client.address),
+            NoteWritten {
+                name: name.clone(),
+                author: author.clone(),
+                revision: 1,
+            }
+            .to_xdr(&env, &client.address),
+            NoteDeleted { name: name.clone() }.to_xdr(&env, &client.address),
+            SessionStarted {
+                who: who.clone(),
+                expires_at: env.ledger().sequence() + 5,
+            }
+            .to_xdr(&env, &client.address),
+            AmountsTallied {
+                count: 2,
+                total: 3,
+            }
+            .to_xdr(&env, &client.address),
+        ];
+        for event in expected.iter() {
+            assert!(events.contains(event), "missing event {event:?}");
+        }
+    }
+
+    /// Events whose payload is empty or zeroed still publish a well-formed
+    /// event rather than being skipped.
+    #[test]
+    fn events_with_empty_data_are_still_published() {
+        let env = Env::default();
+        let (client, _) = setup(&env);
+
+        // Empty vec payload: count 0, total 0.
+        assert_eq!(client.tally(&vec![&env]), 0);
+        let expected = AmountsTallied { count: 0, total: 0 }.to_xdr(&env, &client.address);
+        assert_eq!(env.events().all().events().last(), Some(&expected));
+
+        // Zero bump: both the struct and the single-value events fire.
+        assert_eq!(client.bump(&0), 0);
+        let emitted = env.events().all();
+        let events = emitted.events();
+        assert!(events.contains(&Bumped { counter: 0 }.to_xdr(&env, &client.address)));
+        assert!(events.contains(&CounterValue { counter: 0 }.to_xdr(&env, &client.address)));
+
+        // An empty note body is allowed and still emits NoteWritten.
+        let author = Address::generate(&env);
+        let name = Symbol::new(&env, "empty");
+        assert_eq!(
+            client.put_note(&author, &name, &String::from_str(&env, "")),
+            1
+        );
+        let expected = NoteWritten {
+            name,
+            author,
+            revision: 1,
+        }
+        .to_xdr(&env, &client.address);
+        assert_eq!(env.events().all().events().last(), Some(&expected));
+    }
+
+    /// Sanity check that the raw storage key encoding keeps variants apart.
+    #[test]
+    fn data_key_encodings_are_distinct() {
+        let env = Env::default();
+        let a = Symbol::new(&env, "a");
+        let b = Symbol::new(&env, "b");
+        let keys = [
+            DataKey::Admin,
+            DataKey::Counter,
+            DataKey::Note(a.clone()),
+            DataKey::Note(b),
+            DataKey::Values,
+            DataKey::Labels,
+            DataKey::Session(Address::generate(&env)),
+        ];
+        for (i, left) in keys.iter().enumerate() {
+            for right in keys.iter().skip(i + 1) {
+                assert_ne!(left, right);
+            }
+        }
+        // Round-trip through the ScVal encoding used for storage.
+        let encoded: soroban_sdk::Val = DataKey::Note(a.clone()).try_into_val(&env).unwrap();
+        assert_eq!(DataKey::try_from_val(&env, &encoded).unwrap(), DataKey::Note(a));
+    }
+}
