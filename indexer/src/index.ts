@@ -2,6 +2,7 @@ import { rpc, encodeMuxedAccountToAddress, type xdr } from "@stellar/stellar-sdk
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
+import type { Prisma } from "@prisma/client";
 import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
 import { log } from "./logger.js";
 import {
@@ -232,43 +233,48 @@ function sourceAccountOf(envelope: xdr.TransactionEnvelope): string {
   }
 }
 
-export async function processTransaction(
+/** Rows one transaction contributes, grouped per table so a page can be written in bulk. */
+export interface TransactionRows {
+  invocations: Prisma.InvocationCreateManyInput[];
+  contracts: Prisma.ContractCreateManyInput[];
+  storageChanges: Prisma.StorageChangeCreateManyInput[];
+  events: Prisma.ContractEventRecordCreateManyInput[];
+}
+
+/** Decode a transaction into the rows it would insert. Writes nothing. */
+export function transactionRows(
   tx: rpc.Api.TransactionInfo,
-  db: Db = prisma,
   contractFilter: Set<string> | null = CONTRACT_IDS
-): Promise<void> {
+): TransactionRows {
   const createdAt = new Date(tx.createdAt * 1000);
   const invocation = decodeInvocation(tx.envelopeXdr);
   const sourceAccount = sourceAccountOf(tx.envelopeXdr);
 
-  if (invocation && isIndexedContract(invocation.contractId, contractFilter)) {
-    // skipDuplicates makes reprocessing a page after a crash-before-cursor-advance safe.
-    const invocationResult = await db.invocation.createMany({
-      data: [
-        {
-          txHash: tx.txHash,
-          ledger: tx.ledger,
-          createdAt,
-          contractId: invocation.contractId,
-          functionName: invocation.functionName,
-          args: invocation.args as object,
-          successful: tx.status === "SUCCESS",
-          sourceAccount,
-          returnValue:
-            tx.status === "SUCCESS" ? extractInvocationReturnValue(tx.resultMetaXdr) : null,
-        },
-      ],
-      skipDuplicates: true,
-    });
-    metricRowsWritten.inc({ table: "invocation" }, invocationResult.count);
-  }
+  const invocations: Prisma.InvocationCreateManyInput[] =
+    invocation && isIndexedContract(invocation.contractId, contractFilter)
+      ? [
+          {
+            txHash: tx.txHash,
+            ledger: tx.ledger,
+            createdAt,
+            contractId: invocation.contractId,
+            functionName: invocation.functionName,
+            args: invocation.args as object,
+            successful: tx.status === "SUCCESS",
+            sourceAccount,
+            returnValue:
+              tx.status === "SUCCESS" ? extractInvocationReturnValue(tx.resultMetaXdr) : null,
+          },
+        ]
+      : [];
 
-  let contract: ReturnType<typeof decodeContractCreation> = null;
-  if (tx.status === "SUCCESS" && sourceAccount) {
-    contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
-    if (contract && isIndexedContract(contract.contractId, contractFilter)) {
-      const contractResult = await db.contract.createMany({
-        data: [
+  const contract =
+    tx.status === "SUCCESS" && sourceAccount
+      ? decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount)
+      : null;
+  const contracts: Prisma.ContractCreateManyInput[] =
+    contract && isIndexedContract(contract.contractId, contractFilter)
+      ? [
           {
             contractId: contract.contractId,
             creator: contract.creator,
@@ -276,55 +282,94 @@ export async function processTransaction(
             deploymentTxHash: tx.txHash,
             createdAt,
           },
-        ],
-        skipDuplicates: true,
-      });
-      metricRowsWritten.inc({ table: "contract" }, contractResult.count);
-    }
+        ]
+      : [];
+
+  const storageChanges: Prisma.StorageChangeCreateManyInput[] = extractStorageChanges(
+    tx.resultMetaXdr
+  )
+    .filter((c) => isIndexedContract(c.contractId, contractFilter))
+    .map((c) => ({
+      contractId: c.contractId,
+      durability: c.durability,
+      keyDisplay: c.keyDisplay,
+      valueDisplay: c.valueDisplay,
+      changeType: c.changeType,
+      ledger: tx.ledger,
+      txHash: tx.txHash,
+      createdAt,
+    }));
+
+  const extractedEvents = extractEvents(tx.resultMetaXdr, tx.txHash).filter((e) =>
+    isIndexedContract(e.contractId, contractFilter)
+  );
+  if (contract && isIndexedContract(contract.contractId, contractFilter)) {
+    extractedEvents.push(contractCreatedEvent(contract, tx.txHash));
+  }
+  const events: Prisma.ContractEventRecordCreateManyInput[] = extractedEvents.map((e) => ({
+    eventId: e.eventId,
+    eventIndex: e.eventIndex,
+    contractId: e.contractId,
+    type: e.type,
+    topic: e.topic,
+    value: e.value,
+    deployer: e.deployer ?? null,
+    salt: e.salt ?? null,
+    wasmHash: e.wasmHash ?? null,
+    txHash: tx.txHash,
+    ledger: tx.ledger,
+    createdAt,
+  }));
+
+  return { invocations, contracts, storageChanges, events };
+}
+
+/**
+ * Insert a batch of transactions with one createMany per table instead of one
+ * round-trip per row. `skipDuplicates` makes reprocessing a page after a
+ * crash-before-cursor-advance safe; callers that need all-or-nothing semantics
+ * pass a transaction client (see `commitPage`).
+ */
+export async function insertTransactions(
+  transactions: rpc.Api.TransactionInfo[],
+  db: Db = prisma,
+  contractFilter: Set<string> | null = CONTRACT_IDS
+): Promise<void> {
+  const rows: TransactionRows = {
+    invocations: [],
+    contracts: [],
+    storageChanges: [],
+    events: [],
+  };
+  for (const tx of transactions) {
+    const txRows = transactionRows(tx, contractFilter);
+    rows.invocations.push(...txRows.invocations);
+    rows.contracts.push(...txRows.contracts);
+    rows.storageChanges.push(...txRows.storageChanges);
+    rows.events.push(...txRows.events);
   }
 
-  const changes = extractStorageChanges(tx.resultMetaXdr);
-  if (changes.length > 0) {
-    const storageResult = await db.storageChange.createMany({
-      skipDuplicates: true,
-      data: changes
-        .filter((c) => isIndexedContract(c.contractId, contractFilter))
-        .map((c) => ({
-          contractId: c.contractId,
-          durability: c.durability,
-          keyDisplay: c.keyDisplay,
-          valueDisplay: c.valueDisplay,
-          changeType: c.changeType,
-          ledger: tx.ledger,
-          txHash: tx.txHash,
-          createdAt,
-        })),
-    });
-    metricRowsWritten.inc({ table: "storageChange" }, storageResult.count);
+  if (rows.invocations.length > 0) {
+    const result = await db.invocation.createMany({ data: rows.invocations, skipDuplicates: true });
+    metricRowsWritten.inc({ table: "invocation" }, result.count);
   }
-
-  const events = extractEvents(tx.resultMetaXdr, tx.txHash);
-  if (contract) events.push(contractCreatedEvent(contract, tx.txHash));
-  if (events.length > 0) {
-    const eventsResult = await db.contractEventRecord.createMany({
+  if (rows.contracts.length > 0) {
+    const result = await db.contract.createMany({ data: rows.contracts, skipDuplicates: true });
+    metricRowsWritten.inc({ table: "contract" }, result.count);
+  }
+  if (rows.storageChanges.length > 0) {
+    const result = await db.storageChange.createMany({
+      data: rows.storageChanges,
       skipDuplicates: true,
-      data: events
-        .filter((e) => isIndexedContract(e.contractId, contractFilter))
-        .map((e) => ({
-          eventId: e.eventId,
-          contractId: e.contractId,
-          type: e.type,
-          topic: e.topic,
-          value: e.value,
-          deployer: e.deployer ?? null,
-          salt: e.salt ?? null,
-          wasmHash: e.wasmHash ?? null,
-          txHash: tx.txHash,
-          ledger: tx.ledger,
-          createdAt,
-        })),
     });
-    metricRowsWritten.inc({ table: "contractEventRecord" }, eventsResult.count);
+    metricRowsWritten.inc({ table: "storageChange" }, result.count);
+  }
+  if (rows.events.length > 0) {
+    const result = await db.contractEventRecord.createMany({
+      data: rows.events,
+      skipDuplicates: true,
+    });
+    metricRowsWritten.inc({ table: "contractEventRecord" }, result.count);
   }
 }
 
@@ -372,6 +417,15 @@ export async function refreshDeadLetterQueueSize(db: Db = prisma): Promise<void>
   metricDeadLetterQueueSize.set(size);
 }
 
+/** Index a single transaction. */
+export async function processTransaction(
+  tx: rpc.Api.TransactionInfo,
+  db: Db = prisma,
+  contractFilter: Set<string> | null = CONTRACT_IDS
+): Promise<void> {
+  await insertTransactions([tx], db, contractFilter);
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "object" && err !== null && "message" in err) {
@@ -385,19 +439,52 @@ export interface PageProgress {
   lastLedger: number;
   paginationCursor: string | null;
   gap?: { fromLedger: number; toLedger: number; reason: string };
+  /** Every gap this page skipped, when more than one applies. */
+  gaps?: { fromLedger: number; toLedger: number; reason: string }[];
+}
+
+/** The subset of `rpc.Server` the poll loop needs; injectable so tests can mock RPC responses. */
+export type RpcClient = Pick<typeof server, "getTransactions" | "getLatestLedger" | "getHealth">;
+
+/**
+ * Warn when a page stops short of the ledgers it was asked to cover. A short page
+ * that ends before `latestLedger` means the RPC node returned less history than it
+ * reported (e.g. a retention-window cutoff), so the skipped ledgers are recorded as
+ * a gap instead of being dropped silently.
+ */
+export function partialPageGap(
+  transactions: rpc.Api.TransactionInfo[],
+  lastLedger: number,
+  latestLedger: number
+): PageProgress["gap"] | undefined {
+  if (transactions.length === 0 || lastLedger >= latestLedger) return undefined;
+  const fromLedger = lastLedger + 1;
+  log.warn("RPC returned a partial page; recording a gap", {
+    transactionCount: transactions.length,
+    lastLedger,
+    latestLedger,
+    gapFromLedger: fromLedger,
+    gapToLedger: latestLedger,
+  });
+  return {
+    fromLedger,
+    toLedger: latestLedger,
+    reason: `RPC returned a partial page ending at ledger ${lastLedger} (network at ${latestLedger})`,
+  };
 }
 
 /** Fetch one transaction page from the persisted ledger and RPC pagination cursor. Writes nothing. */
 export async function fetchPage(
   cursor: number,
   paginationCursor: string | null,
-  latestLedger: number
+  latestLedger: number,
+  client: RpcClient = server
 ): Promise<{ transactions: rpc.Api.TransactionInfo[]; progress: PageProgress }> {
   let res;
   try {
     res = paginationCursor
-      ? await server.getTransactions({ pagination: { limit: PAGE_LIMIT, cursor: paginationCursor } })
-      : await server.getTransactions({ startLedger: cursor + 1, pagination: { limit: PAGE_LIMIT } });
+      ? await client.getTransactions({ pagination: { limit: PAGE_LIMIT, cursor: paginationCursor } })
+      : await client.getTransactions({ startLedger: cursor + 1, pagination: { limit: PAGE_LIMIT } });
   } catch (err) {
     const message = errorMessage(err);
 
@@ -438,11 +525,14 @@ export async function fetchPage(
   if (res.transactions.length === PAGE_LIMIT && (!res.cursor || res.cursor === paginationCursor)) {
     throw new Error("RPC returned a full page without advancing its transaction cursor");
   }
+  const lastLedger = Math.max(cursor, ...res.transactions.map((t) => t.ledger));
+  const gap = partialPageGap(res.transactions, lastLedger, latestLedger);
   return {
     transactions: res.transactions,
     progress: {
-      lastLedger: Math.max(cursor, ...res.transactions.map((t) => t.ledger)),
+      lastLedger,
       paginationCursor: res.transactions.length === PAGE_LIMIT ? res.cursor : null,
+      ...(gap ? { gap, gaps: [gap] } : {}),
     },
   };
 }
@@ -458,11 +548,10 @@ export async function commitPage(
 ): Promise<void> {
   await client.$transaction(
     async (db) => {
-      for (const tx of transactions) {
-        await processTransaction(tx, db);
-      }
+      await insertTransactions(transactions, db);
       if (progress.gap) {
-        await db.indexerGap.create({ data: progress.gap });
+        // A page can carry both a retention gap and a partial-page gap; keep both.
+        await db.indexerGap.createMany({ data: progress.gaps ?? [progress.gap] });
       }
       await setCursor(progress.lastLedger, progress.paginationCursor, db);
     },

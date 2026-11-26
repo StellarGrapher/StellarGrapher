@@ -245,6 +245,7 @@ function expandInstanceEntry(
 
 export interface DecodedEvent {
   eventId: string;
+  eventIndex: number;
   contractId: string;
   type: string;
   topic: string[];
@@ -266,6 +267,7 @@ export function contractCreatedEvent(
 ): DecodedEvent {
   return {
     eventId: `${txHash}-contract_created`,
+    eventIndex: -1,
     contractId: creation.contractId,
     type: "contract_created",
     topic: ["contract_created", creation.creator],
@@ -324,6 +326,7 @@ function decodeEvent(
   return [
     {
       eventId: `${txHash}-${opIndex}-${eventIndex}`,
+      eventIndex,
       contractId: StrKey.encodeContract(contractIdBuf),
       type: event.type().name,
       topic: body.topics().map(scValToDisplay),

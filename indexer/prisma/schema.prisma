@@ -121,10 +121,12 @@ model ContractEventRecord {
   wasmHash   String?
   txHash     String
   ledger     Int
+  eventIndex Int
   createdAt  DateTime
   // Base64 ContractEvent XDR the decoded columns above were derived from.
   // Null for synthesized `contract_created` events, which have no XDR.
   rawXdr     String?
 
+  @@index([contractId, ledger, eventIndex])
   @@index([contractId, ledger])
 }

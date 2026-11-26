@@ -115,8 +115,8 @@ describe("commitPage", () => {
         const staged = { gaps: [] as unknown[], cursor: undefined as undefined | typeof committed.cursor };
         const db = {
           indexerGap: {
-            create: async ({ data }: { data: unknown }) => {
-              staged.gaps.push(data);
+            createMany: async ({ data }: { data: unknown[] }) => {
+              staged.gaps.push(...data);
             },
           },
           indexerCursor: {

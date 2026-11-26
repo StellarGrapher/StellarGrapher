@@ -25,7 +25,15 @@ To index a historical ledger range, run:
 npm run backfill -- --from 1000 --to 2000
 ```
 
-The backfill uses the same transaction processor as live indexing. Its progress is checkpointed in PostgreSQL after each RPC page, so rerunning the same range resumes safely after an interruption. Inserts are idempotent; a different range cannot replace an incomplete backfill. After a range is complete, a new range may be started. The requested end ledger must be available from the configured RPC node.
+The backfill uses the same transaction processor as live indexing. Its progress is checkpointed in PostgreSQL at least every 100 ledgers, so rerunning the same range resumes safely after an interruption. Inserts are idempotent; a different range cannot replace an incomplete backfill. After a range is complete, a new range may be started. The requested end ledger must be available from the configured RPC node.
+
+To continue an interrupted backfill from its saved checkpoint, run:
+
+```bash
+npm run backfill -- --resume
+```
+
+`--resume` reads the stored checkpoint (range and last processed ledger) and continues from there; `--from`/`--to` are optional and ignored when a checkpoint exists. The checkpoint is cleared once the range completes successfully.
 
 Or run everything together with Docker Compose from the repository root:
 
