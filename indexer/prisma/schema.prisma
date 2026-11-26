@@ -29,6 +29,25 @@ model IndexerGap {
   @@index([fromLedger])
 }
 
+// A transaction the indexer could not decode or persist. Kept instead of being
+// silently skipped so it can be inspected and retried from the admin endpoint.
+model DeadLetterEvent {
+  id           String    @id @default(cuid())
+  txHash       String
+  ledger       Int
+  stage        String // decode | persist
+  errorMessage String
+  envelopeXdr  String
+  resultMetaXdr String
+  createdAt    DateTime  @default(now())
+  retryCount   Int       @default(0)
+  lastRetryAt  DateTime?
+  resolvedAt   DateTime?
+
+  @@unique([txHash, stage])
+  @@index([resolvedAt, createdAt])
+}
+
 model BackfillCursor {
   id               Int      @id @default(1)
   fromLedger       Int
@@ -50,6 +69,9 @@ model Invocation {
   successful    Boolean
   sourceAccount String
   returnValue   String?
+  // Base64 envelope XDR the decoded columns above were derived from, so they
+  // can be re-decoded after a decoder change without re-fetching from RPC.
+  rawXdr        String?
 
   @@unique([txHash])
   @@index([contractId, ledger])
@@ -93,9 +115,16 @@ model ContractEventRecord {
   type       String
   topic      Json
   value      String
+  // Set only for `contract_created` events.
+  deployer   String?
+  salt       String?
+  wasmHash   String?
   txHash     String
   ledger     Int
   createdAt  DateTime
+  // Base64 ContractEvent XDR the decoded columns above were derived from.
+  // Null for synthesized `contract_created` events, which have no XDR.
+  rawXdr     String?
 
   @@index([contractId, ledger])
 }

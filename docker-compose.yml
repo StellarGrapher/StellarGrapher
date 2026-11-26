@@ -20,7 +20,7 @@ services:
     environment:
       DATABASE_URL: postgresql://prism:${POSTGRES_PASSWORD:-prism}@postgres:5432/prism
       SOROBAN_RPC_URL: ${NEXT_PUBLIC_SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
-      POLL_INTERVAL_MS: "5000"
+      INDEXER_POLL_INTERVAL_MS: "6000"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))"]
       interval: 30s

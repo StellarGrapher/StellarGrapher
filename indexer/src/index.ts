@@ -5,12 +5,15 @@ import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
 import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
 import { log } from "./logger.js";
 import {
+  contractCreatedEvent,
   decodeContractCreation,
   decodeInvocation,
   extractEvents,
   extractInvocationReturnValue,
   extractStorageChanges,
 } from "./decode.js";
+import { retryDeadLetterEvent } from "./dead-letter.js";
+import type { DeadLetterStage } from "./dead-letter.js";
 
 // ---------------------------------------------------------------------------
 // Environment variable validation (#20)
@@ -35,8 +38,9 @@ function requirePositiveInt(name: string, fallback: number): number {
   return n;
 }
 
+
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
-const POLL_INTERVAL_MS = requirePositiveInt("POLL_INTERVAL_MS", 5000);
+const POLL_INTERVAL_MS = requirePositiveInt("INDEXER_POLL_INTERVAL_MS", 6000);
 const HEALTH_PORT = requirePositiveInt("HEALTH_PORT", 8080);
 const MAX_LEDGER_LAG = requirePositiveInt("HEALTH_MAX_LEDGER_LAG", 60);
 const BACKOFF_BASE_MS = 1_000;
@@ -71,6 +75,19 @@ export const metricLag = new Gauge({
 export const metricPollErrors = new Counter({
   name: "indexer_poll_errors_total",
   help: "Total number of poll errors encountered",
+  registers: [metricsRegistry],
+});
+
+export const metricDeadLetterQueueSize = new Gauge({
+  name: "indexer_dead_letter_queue_size",
+  help: "Number of unresolved dead-letter events awaiting retry",
+  registers: [metricsRegistry],
+});
+
+export const metricDeadLetterEvents = new Counter({
+  name: "indexer_dead_letter_events_total",
+  help: "Total dead-letter events recorded, partitioned by stage",
+  labelNames: ["stage"] as const,
   registers: [metricsRegistry],
 });
 
@@ -210,8 +227,9 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
     metricRowsWritten.inc({ table: "invocation" }, invocationResult.count);
   }
 
+  let contract: ReturnType<typeof decodeContractCreation> = null;
   if (tx.status === "SUCCESS" && sourceAccount) {
-    const contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
+    contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
     if (contract) {
       const contractResult = await db.contract.createMany({
         data: [
@@ -248,6 +266,7 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
   }
 
   const events = extractEvents(tx.resultMetaXdr, tx.txHash);
+  if (contract) events.push(contractCreatedEvent(contract, tx.txHash));
   if (events.length > 0) {
     const eventsResult = await db.contractEventRecord.createMany({
       skipDuplicates: true,
@@ -257,6 +276,9 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
         type: e.type,
         topic: e.topic,
         value: e.value,
+        deployer: e.deployer ?? null,
+        salt: e.salt ?? null,
+        wasmHash: e.wasmHash ?? null,
         txHash: tx.txHash,
         ledger: tx.ledger,
         createdAt,
@@ -264,6 +286,50 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
     });
     metricRowsWritten.inc({ table: "contractEventRecord" }, eventsResult.count);
   }
+}
+
+/**
+ * Process one transaction, recording it in the dead-letter queue instead of
+ * failing the whole page when it cannot be decoded or persisted.
+ */
+export async function processTransactionSafely(
+  tx: rpc.Api.TransactionInfo,
+  db: Db = prisma
+): Promise<void> {
+  try {
+    await processTransaction(tx, db);
+  } catch (err) {
+    await recordDeadLetterEvent(tx, "persist", errorMessage(err), db);
+  }
+}
+
+/** Persist a failed transaction to the dead-letter queue and bump its metrics. */
+export async function recordDeadLetterEvent(
+  tx: rpc.Api.TransactionInfo,
+  stage: DeadLetterStage,
+  message: string,
+  db: Db = prisma
+): Promise<void> {
+  await db.deadLetterEvent.upsert({
+    where: { txHash_stage: { txHash: tx.txHash, stage } },
+    update: { errorMessage: message, resolvedAt: null },
+    create: {
+      txHash: tx.txHash,
+      ledger: tx.ledger,
+      stage,
+      errorMessage: message,
+      envelopeXdr: tx.envelopeXdr.toXDR("base64"),
+      resultMetaXdr: tx.resultMetaXdr.toXDR("base64"),
+    },
+  });
+  metricDeadLetterEvents.inc({ stage });
+  await refreshDeadLetterQueueSize(db);
+}
+
+/** Re-read the unresolved dead-letter count into the queue-size gauge. */
+export async function refreshDeadLetterQueueSize(db: Db = prisma): Promise<void> {
+  const size = await db.deadLetterEvent.count({ where: { resolvedAt: null } });
+  metricDeadLetterQueueSize.set(size);
 }
 
 function errorMessage(err: unknown): string {

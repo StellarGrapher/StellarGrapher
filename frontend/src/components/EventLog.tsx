@@ -120,7 +120,20 @@ export default function EventLog({ events, specs = [], error = null }: Props) {
               )
             )}
 
-            {data ? (
+            {e.type === "contract_created" ? (
+              <dl className="space-y-0.5">
+                {[
+                  { name: "deployer", value: e.deployer },
+                  { name: "salt", value: e.salt },
+                  { name: "wasm hash", value: e.wasmHash },
+                ].map((field) => (
+                  <div key={field.name} className="flex gap-2 text-xs">
+                    <dt className="text-prism-muted shrink-0">{field.name}</dt>
+                    <dd className="font-mono text-prism-strong break-all">{field.value ?? "—"}</dd>
+                  </div>
+                ))}
+              </dl>
+            ) : data ? (
               <dl className="space-y-0.5">
                 {data.map((field) => (
                   <div key={field.name} className="flex gap-2 text-xs">

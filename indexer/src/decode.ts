@@ -75,6 +75,10 @@ export function extractInvocationReturnValue(meta: xdr.TransactionMeta): string 
 export interface DecodedContractCreation {
   contractId: string;
   creator: string;
+  /** Hex-encoded 32-byte salt of the createContract host function. */
+  salt: string;
+  /** Hex-encoded WASM hash of the uploaded executable. */
+  wasmHash: string;
 }
 
 export function decodeContractCreation(
@@ -84,19 +88,34 @@ export function decodeContractCreation(
 ): DecodedContractCreation | null {
   try {
     const tx = unwrapTx(envelope);
-    const createsContract = tx.operations().some((op) => {
-      if (op.body().switch().name !== "invokeHostFunction") return false;
+    let salt: string | null = null;
+    let wasmHash: string | null = null;
+    for (const op of tx.operations()) {
+      if (op.body().switch().name !== "invokeHostFunction") continue;
       const hostFunction = op.body().invokeHostFunctionOp().hostFunction();
       const kind = hostFunction.switch().name;
-      return kind === "hostFunctionTypeCreateContract" || kind === "hostFunctionTypeCreateContractV2";
-    });
-    if (!createsContract) return null;
+      if (kind === "hostFunctionTypeCreateContract") {
+        const create = hostFunction.createContract();
+        salt = Buffer.from(create.contractIdPreimage().fromAddress().salt()).toString("hex");
+        wasmHash = Buffer.from(create.executable().wasm().hash()).toString("hex");
+      } else if (kind === "hostFunctionTypeCreateContractV2") {
+        const create = hostFunction.createContractV2();
+        salt = Buffer.from(create.contractIdPreimage().fromAddress().salt()).toString("hex");
+        wasmHash = Buffer.from(create.executable().wasm().hash()).toString("hex");
+      } else {
+        continue;
+      }
+      break;
+    }
+    if (salt === null || wasmHash === null) return null;
     const returnValue = sorobanReturnValue(meta);
     if (!returnValue) return null;
     if (returnValue.switch().name !== "scvAddress") return null;
     return {
       contractId: Address.fromScAddress(returnValue.address()).toString(),
       creator,
+      salt,
+      wasmHash,
     };
   } catch {
     return null;
@@ -230,6 +249,35 @@ export interface DecodedEvent {
   type: string;
   topic: string[];
   value: string;
+  /** Set only for synthesized `contract_created` events. */
+  deployer?: string;
+  salt?: string;
+  wasmHash?: string;
+}
+
+/**
+ * Synthesize the `contract_created` event for a contract deployment. Soroban
+ * emits no contract event for creation itself, so the indexer records one from
+ * the createContract host function plus the transaction's return value.
+ */
+export function contractCreatedEvent(
+  creation: DecodedContractCreation,
+  txHash: string
+): DecodedEvent {
+  return {
+    eventId: `${txHash}-contract_created`,
+    contractId: creation.contractId,
+    type: "contract_created",
+    topic: ["contract_created", creation.creator],
+    value: JSON.stringify({
+      deployer: creation.creator,
+      salt: creation.salt,
+      wasmHash: creation.wasmHash,
+    }),
+    deployer: creation.creator,
+    salt: creation.salt,
+    wasmHash: creation.wasmHash,
+  };
 }
 
 /**
