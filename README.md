@@ -149,6 +149,21 @@ To check the setup, send about 35 requests in a minute to a read route from one 
 
 Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get started. Frontend, RPC integration, indexer, and Soroban contract contributions are all needed.
 
+New contributors can follow the [first-PR walkthrough](./docs/onboarding.md).
+
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [docs/onboarding.md](./docs/onboarding.md) | First pull request walkthrough (frontend, indexer, contracts). |
+| [docs/api-reference.md](./docs/api-reference.md) | The JSON API and its rate-limiting/back-off model. |
+| [docs/troubleshooting.md](./docs/troubleshooting.md) | Common self-hosting issues and fixes. |
+| [ENVIRONMENT.md](./ENVIRONMENT.md) | Every environment variable, with defaults. |
+| [GLOSSARY.md](./GLOSSARY.md) | Soroban and Stellar terms in plain language. |
+| [adr/](./adr/README.md) | Architecture decision records. |
+| [indexer/README.md](./indexer/README.md) | Indexer flow diagram and database schema. |
+| [contracts/README.md](./contracts/README.md) | Showcase contract function reference. |
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

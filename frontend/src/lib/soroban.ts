@@ -33,6 +33,12 @@ function server(): rpc.Server {
   return _server;
 }
 
+/**
+ * Read a contract's on-chain instance: executable kind (WASM vs. built-in
+ * Stellar asset), WASM hash, TTL, instance storage, and asset details. Returns
+ * null when the instance entry cannot be read. Enriched with indexer-sourced
+ * creator/deployment info when the indexer is configured.
+ */
 export async function getContractInfo(contractId: string): Promise<ContractInfo | null> {
   let info: ContractInfo;
   try {
@@ -84,8 +90,10 @@ export async function getContractInfo(contractId: string): Promise<ContractInfo 
   };
 }
 
+/** The input kinds the storage-key lookup form accepts. */
 export type StorageKeyKind = "symbol" | "string" | "u32" | "address";
 
+/** Parse a raw storage-key input string into an ScVal of the given kind. */
 export function parseStorageKeyInput(raw: string, kind: StorageKeyKind): xdr.ScVal {
   switch (kind) {
     case "symbol":
@@ -99,6 +107,7 @@ export function parseStorageKeyInput(raw: string, kind: StorageKeyKind): xdr.ScV
   }
 }
 
+/** Point-lookup a single storage entry by key and durability. Returns null when absent. */
 export async function lookupStorageEntry(
   contractId: string,
   key: xdr.ScVal,
@@ -120,6 +129,7 @@ export async function lookupStorageEntry(
   }
 }
 
+/** Enumerate every storage key the indexer has seen for a contract. Empty without an indexer. */
 export async function getFullStorageEntries(contractId: string): Promise<StorageEntry[]> {
   if (!isIndexerConfigured()) return [];
   const indexed = await getIndexedStorageEntries(contractId);
@@ -262,6 +272,7 @@ async function getContractEventsFromRpc(contractId: string, limit: number): Prom
   }
 }
 
+/** Fetch the most recent invocations for a contract (see getInvocationHistoryPage for paging). */
 export async function getInvocationHistory(
   contractId: string,
   limit = INVOCATION_PAGE_SIZE
@@ -327,6 +338,7 @@ async function getInvocationHistoryFromRpc(contractId: string, limit: number): P
     .sort((a, b) => b.ledger - a.ledger);
 }
 
+/** Resolve a transaction's decoded return value, preferring the indexer's stored copy. */
 export async function getInvocationReturnValue(txHash: string): Promise<string | null> {
   const indexed = await getIndexedInvocationReturnValue(txHash);
   if (indexed !== null) return indexed;
@@ -348,6 +360,7 @@ export interface NetworkActivityItem {
   timestamp: string;
 }
 
+/** Fetch the most recent contract events across the whole network (for the activity feed). */
 export async function getRecentNetworkActivity(limit = 5): Promise<NetworkActivityItem[]> {
   try {
     const s = server();
@@ -379,6 +392,11 @@ export interface SimulationResult {
   instructions?: number;
 }
 
+/**
+ * Simulate a read-only contract call against the configured network and return
+ * its result, resource fee, and CPU instructions. Never mutates state; a failed
+ * simulation is reported with `success: false` and an `error` message.
+ */
 export async function simulateInvocation(
   contractId: string,
   functionName: string,

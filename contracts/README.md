@@ -23,6 +23,74 @@ formats, varied ABI values, authorization, and a predictable contract error.
   `Vec<T>`, `Map<K, V>`, `Option<T>`, struct returns, and a contract enum.
 - **Failure** — `boom()` always returns `Error::Deliberate`.
 
+## Showcase contract reference
+
+Full reference for `contracts/showcase/src/lib.rs`. Durability abbreviations:
+**I** = instance, **P** = persistent, **T** = temporary.
+
+### Storage keys (`DataKey`)
+
+| Key                 | Durability | Type                       | Written by                          |
+| ------------------- | ---------- | -------------------------- | ----------------------------------- |
+| `Admin`             | I          | `Address`                  | `init`                              |
+| `Counter`           | I          | `u32`                      | `init`, `bump`                      |
+| `Note(Symbol)`      | P          | `Note`                     | `put_note`, removed by `delete_note`|
+| `Values`            | P          | `Vec<i128>`                | `store_collections`                 |
+| `Labels`            | P          | `Map<Symbol, String>`      | `store_collections`                 |
+| `Session(Address)`  | T          | `u32` (expiry ledger)      | `start_session`                     |
+
+`Note` is `{ author: Address, body: String, revision: u32 }`. Persistent and
+temporary entries are kept alive with `extend_ttl(30 days, 90 days)`; sessions
+use `extend_ttl(ledgers, ledgers)`. Notes are capped at `MAX_NOTE_LEN = 200`
+bytes.
+
+### Errors (`Error`)
+
+| Code | Name               | Raised by                             |
+| ---- | ------------------ | ------------------------------------- |
+| 1    | `AlreadyInitialized` | `init` when already initialized     |
+| 2    | `NotInitialized`   | reads before `init`                   |
+| 3    | `NoteTooLong`      | `put_note` body over 200 bytes        |
+| 4    | `NoSuchNote`       | `note` / `delete_note` on a missing name |
+| 5    | `Deliberate`       | `boom` (always)                       |
+
+### Functions
+
+| Function | Inputs | Output | Side effects |
+| -------- | ------ | ------ | ------------ |
+| `init` | `admin: Address` | `Result<(), Error>` | Writes `Admin` and `Counter=0` (instance). Emits `Initialized`. Errors if already initialized. |
+| `admin` | — | `Result<Address, Error>` | Reads `Admin`. `NotInitialized` before `init`. |
+| `bump` | `by: u32` | `u32` | Reads/sets `Counter` (saturating add), extends its TTL. Emits `Bumped` and `CounterValue`. Returns the new counter. |
+| `put_note` | `author: Address`, `name: Symbol`, `body: String` | `Result<u32, Error>` | `author.require_auth()`. Writes `Note(name)` with `revision+1`, extends TTL. Emits `NoteWritten`. Returns the revision. `NoteTooLong` if body > 200 bytes. |
+| `note` | `name: Symbol` | `Result<Note, Error>` | Reads `Note(name)`, extends TTL. `NoSuchNote` if absent. |
+| `delete_note` | `name: Symbol` | `Result<(), Error>` | `admin.require_auth()`. Removes `Note(name)`. Emits `NoteDeleted`. `NoSuchNote` if absent. |
+| `start_session` | `who: Address`, `ledgers: u32` | `()` | Writes `Session(who)=expiry` (temporary), extends TTL to `ledgers` (min 1). Emits `SessionStarted`. |
+| `session` | `who: Address` | `Option<u32>` | Reads `Session(who)` expiry ledger, if still live. |
+| `revisions` | `names: Vec<Symbol>` | `Map<Symbol, u32>` | Reads each `Note(name)`; unknown names are skipped. |
+| `store_collections` | `values: Vec<i128>`, `labels: Map<Symbol, String>` | `()` | Writes `Values` and `Labels` (persistent), extends both TTLs. |
+| `stored_values` | — | `Vec<i128>` | Reads `Values` (empty vec if unset). |
+| `stored_labels` | — | `Map<Symbol, String>` | Reads `Labels` (empty map if unset). |
+| `tally` | `amounts: Vec<i128>` | `i128` | Sums with saturation. Emits `AmountsTallied` (vec data). Returns the total. |
+| `checksum` | `blob: Bytes` | `u32` | XORs every byte. Pure; no storage, no events. |
+| `stats` | — | `Result<Stats, Error>` | Reads `Counter` and `Admin`. Returns `Stats { counter, admin, contract }` where `contract` is the contract's own address. `NotInitialized` before `init`. |
+| `boom` | — | `Result<(), Error>` | Always returns `Err(Error::Deliberate)`. |
+
+### Events
+
+Default data format is `map` (data keyed by field name); `#[topic]` fields ride
+in the topic list. `AmountsTallied` uses `vec` (positional) data and
+`CounterValue` uses `single-value` data.
+
+| Event | Topics | Data | Emitted by |
+| ----- | ------ | ---- | ---------- |
+| `Initialized` | `admin: Address` | *(none)* | `init` |
+| `Bumped` | *(none)* | `counter: u32` (map) | `bump` |
+| `NoteWritten` | `name: Symbol`, `author: Address` | `revision: u32` (map) | `put_note` |
+| `NoteDeleted` | `name: Symbol` | *(none)* | `delete_note` |
+| `SessionStarted` | `who: Address` | `expires_at: u32` (map) | `start_session` |
+| `AmountsTallied` | *(none)* | `[count: u32, total: i128]` (vec) | `tally` |
+| `CounterValue` | *(none)* | `counter: u32` (single-value) | `bump` |
+
 ## Local development
 
 Run commands from the repository root. Each command below includes a typical
