@@ -9,6 +9,7 @@ import LiveEventLog from "@/components/LiveEventLog";
 import CopyButton from "@/components/CopyButton";
 import SectionHeader from "@/components/SectionHeader";
 import Breadcrumb from "@/components/Breadcrumb";
+import BookmarkButton from "@/components/BookmarkButton";
 import { EVENT_PAGE_SIZE, INVOCATION_PAGE_SIZE } from "@/lib/contract-lists";
 
 export const dynamic = "force-dynamic";
@@ -86,6 +87,7 @@ export default async function ContractPage({ params }: Props) {
       <div className="flex items-start gap-2 mb-8">
         <p className="text-prism-muted font-mono text-sm break-all">{contractId}</p>
         <CopyButton value={contractId} what="contract ID" />
+        <BookmarkButton contractId={contractId} />
         {wasmSizeKb != null && (
           <span className="ml-auto shrink-0 rounded bg-prism-surface px-2 py-1 text-xs font-mono text-prism-muted">
             WASM: {wasmSizeKb.toFixed(2)} KB

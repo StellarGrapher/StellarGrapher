@@ -107,8 +107,12 @@ export async function GET(req: Request, { params }: Params) {
   }
 
   const { items, nextCursor, error } = await getContractEventsPage(params.id, request);
+
   if (error) {
-    return NextResponse.json({ events: [], nextCursor: null, error }, { status: 502, headers: cors });
+    return NextResponse.json(
+      { events: items, nextCursor, error },
+      { status: 502, headers: cors }
+    );
   }
   return NextResponse.json({ events: items, nextCursor, error: null }, { headers: cors });
 }

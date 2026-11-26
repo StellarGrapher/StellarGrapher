@@ -239,3 +239,5 @@ MIT — see [LICENSE](./LICENSE).
 
 <!-- handsoff-issue-7 -->
 - #7: feat(frontend): Add key filtering/search in contract storage inspector
+<!-- handsoff-issue-2 -->
+- #2: feat(frontend): Implement contract search autocomplete with recent searches

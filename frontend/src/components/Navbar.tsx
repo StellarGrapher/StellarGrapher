@@ -2,6 +2,7 @@ import Link from "next/link";
 import SearchBar from "./SearchBar";
 import NavLinks from "./NavLinks";
 import { NetworkSelector } from "./NetworkSelector";
+import FavouritesDropdown from "./FavouritesDropdown";
 import { config, type StellarNetwork } from "@/lib/config";
 
 /**
@@ -39,6 +40,7 @@ export default function Navbar() {
           <Link href="/explorer" className="hover:text-prism-strong transition">Home</Link>
           <Link href="/xdr" className="hover:text-prism-strong transition">XDR</Link>
           <Link href="/docs" className="hover:text-prism-strong transition">API</Link>
+          <FavouritesDropdown />
           <a
             href="https://github.com/prism-explorer/prism"
             target="_blank"
