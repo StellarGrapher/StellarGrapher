@@ -13,6 +13,10 @@ interface Props {
   searchParams: { input?: string };
 }
 
+// Security: decoded XDR values (including ScString) are untrusted input and must
+// never be rendered as HTML. This page intentionally renders all dynamic values
+// through React's safe JSX text path and does not use `dangerouslySetInnerHTML`.
+// If raw HTML rendering is ever required, sanitize with DOMPurify first.
 export default async function XdrPage({ searchParams }: Props) {
   const input = searchParams.input ? base64FromQueryParam(searchParams.input) : undefined;
   const result = input ? await decodeXdrAction(input) : null;

@@ -14,6 +14,10 @@ export const dynamic = "force-dynamic";
 
 interface Props { params: { id: string } }
 
+// Security (#123): all dynamic XDR-derived values on this page are rendered
+// through React's safe text rendering path (JSX text nodes / props), never via
+// dangerouslySetInnerHTML. This page contains no dangerouslySetInnerHTML usage.
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const contractId = params.id;
   const info = await getContractInfo(contractId);
