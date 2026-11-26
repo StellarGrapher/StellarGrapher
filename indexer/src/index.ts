@@ -14,6 +14,7 @@ import {
   decodeTokenEvent,
   extractEvents,
   extractInvocationReturnValue,
+  extractInvocationStorageChanges,
   extractStorageChanges,
   type DecodedTokenEvent,
 } from "./decode.js";
@@ -67,6 +68,7 @@ export function parseContractIds(raw: string | undefined): Set<string> | null {
 }
 
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
+const RPC_FAILOVER_THRESHOLD = requirePositiveInt("SOROBAN_RPC_FAILOVER_THRESHOLD", 3);
 const POLL_INTERVAL_MS = requirePositiveInt("INDEXER_POLL_INTERVAL_MS", 6000);
 const HEALTH_PORT = requirePositiveInt("HEALTH_PORT", 8080);
 const METRICS_LISTEN_ADDR = process.env.METRICS_LISTEN_ADDR?.trim() || "127.0.0.1:9090";
@@ -82,6 +84,33 @@ export function isIndexedContract(
   filter: Set<string> | null = CONTRACT_IDS
 ): boolean {
   return filter === null || filter.has(contractId);
+}
+
+/**
+ * Data retention (#72). INDEXER_RETENTION_DAYS is the number of days of events and
+ * invocations to keep; unset (or blank) means unlimited, i.e. nothing is pruned.
+ */
+export const RETENTION_DAYS = parseRetentionDays(process.env.INDEXER_RETENTION_DAYS);
+export const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+
+export function parseRetentionDays(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    log.error("INDEXER_RETENTION_DAYS must be a positive integer", {
+      envVar: "INDEXER_RETENTION_DAYS",
+      value: raw,
+      fatal: true,
+    });
+    process.exit(1);
+  }
+  return n;
+}
+
+/** Rows older than this instant are pruned; null when retention is unlimited. */
+export function retentionCutoff(days: number | null, now: number = Date.now()): Date | null {
+  if (days === null) return null;
+  return new Date(now - days * 24 * 60 * 60 * 1_000);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +140,7 @@ export const metricEventsIndexed = new Counter({
 
 export const metricLag = new Gauge({
   name: "indexer_lag_ledgers",
-  help: "Current lag between the indexer cursor and the network latest ledger",
+  help: "Current lag in ledgers between the network latest ledger and the last indexed ledger",
   registers: [metricsRegistry],
 });
 
@@ -134,7 +163,90 @@ export const metricDeadLetterEvents = new Counter({
   registers: [metricsRegistry],
 });
 
-export const server = new rpc.Server(RPC_URL, { timeout: 10_000 });
+export const metricRowsPruned = new Counter({
+  name: "indexer_rows_pruned_total",
+  help: "Total rows deleted by the retention pruning task, partitioned by table",
+  labelNames: ["table"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * RPC endpoint failover (#71). SOROBAN_RPC_URLS is a comma-separated list of
+ * endpoints; the first entry is the primary. SOROBAN_RPC_URL is still honoured
+ * and used as the primary when SOROBAN_RPC_URLS is unset.
+ */
+export function parseRpcUrls(raw: string | undefined, primary: string): string[] {
+  const urls = (raw ?? "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter((url) => url !== "");
+  const all = urls.length > 0 ? urls : [primary];
+  return [...new Set(all)];
+}
+
+export const RPC_URLS = parseRpcUrls(process.env.SOROBAN_RPC_URLS, RPC_URL);
+
+/**
+ * Rotates through RPC endpoints after `threshold` consecutive failures and
+ * returns to the primary as soon as it answers again.
+ */
+export class RpcFailover {
+  private index = 0;
+  private failures = 0;
+
+  constructor(
+    readonly urls: string[],
+    private readonly threshold: number = RPC_FAILOVER_THRESHOLD
+  ) {
+    if (urls.length === 0) throw new Error("at least one RPC URL is required");
+  }
+
+  get activeUrl(): string {
+    return this.urls[this.index];
+  }
+
+  get activeServer(): rpc.Server {
+    return this.servers[this.index];
+  }
+
+  private readonly servers = this.urls.map(
+    (url) => new rpc.Server(url, { timeout: 10_000 })
+  );
+
+  /** Record a successful call: reset the failure count and prefer the primary again. */
+  recordSuccess(): void {
+    this.failures = 0;
+    if (this.index !== 0) {
+      this.index = 0;
+      log.info("RPC endpoint recovered; switched back to primary", { rpcUrl: this.activeUrl });
+    }
+  }
+
+  /** Record a failed call; returns true when the active endpoint was rotated. */
+  recordFailure(): boolean {
+    this.failures++;
+    if (this.failures < this.threshold || this.urls.length === 1) return false;
+    this.failures = 0;
+    this.index = (this.index + 1) % this.urls.length;
+    log.warn("RPC endpoint failed repeatedly; switched to fallback", {
+      failureThreshold: this.threshold,
+      rpcUrl: this.activeUrl,
+    });
+    return true;
+  }
+}
+
+export const failover = new RpcFailover(RPC_URLS);
+log.info("active RPC endpoint", { rpcUrl: failover.activeUrl });
+
+/** The RPC server currently in use; follows failover rotations. */
+export const server = {
+  getHealth: () => failover.activeServer.getHealth(),
+  getLatestLedger: () => failover.activeServer.getLatestLedger(),
+  getTransactions: (args: Parameters<rpc.Server["getTransactions"]>[0]) =>
+    failover.activeServer.getTransactions(args),
+  getLedgerEntries: (key: xdr.LedgerKey) => failover.activeServer.getLedgerEntries(key),
+};
 
 let stopping = false;
 let wakeFromSleep = (): void => {};
@@ -375,6 +487,30 @@ async function handleReindexRequest(req: IncomingMessage, res: ServerResponse): 
   }
 }
 
+const LAG_LOG_INTERVAL_MS = 60_000;
+
+/** Lag in ledgers between the network latest ledger and the last indexed ledger. */
+export function ledgerLag(latestNetworkLedger: number, lastIndexedLedger: number): number {
+  return Math.max(0, latestNetworkLedger - lastIndexedLedger);
+}
+
+/** Records the lag gauge and logs it at most once per LAG_LOG_INTERVAL_MS. */
+export function recordLag(
+  latestNetworkLedger: number,
+  lastIndexedLedger: number,
+  now: number = Date.now()
+): number {
+  const lag = ledgerLag(latestNetworkLedger, lastIndexedLedger);
+  metricLag.set(lag);
+  if (now - lastLagLogAt >= LAG_LOG_INTERVAL_MS) {
+    lastLagLogAt = now;
+    log.info("ledger lag", { lag, latestNetworkLedger, lastIndexedLedger });
+  }
+  return lag;
+}
+
+let lastLagLogAt = 0;
+
 function startHealthServer(): Server {
   const httpServer = createServer(async (req, res) => {
     const path = req.url?.split("?")[0];
@@ -523,11 +659,17 @@ async function fetchExpiresAtLedger(
 /** Rows one transaction contributes, grouped per table so a page can be written in bulk. */
 export interface TransactionRows {
   invocations: Prisma.InvocationCreateManyInput[];
+  invocationStorageChanges: PendingInvocationStorageChange[];
   contracts: Prisma.ContractCreateManyInput[];
   storageChanges: Prisma.StorageChangeCreateManyInput[];
   events: Prisma.ContractEventRecordCreateManyInput[];
   tokenEvents: Prisma.TokenEventCreateManyInput[];
 }
+
+type PendingInvocationStorageChange = Pick<
+  Prisma.InvocationStorageChangeCreateManyInput,
+  "contractId" | "durability" | "key" | "valueBefore" | "valueAfter" | "ledger" | "txHash" | "createdAt"
+> & { invocationTxHash: string };
 
 /** Decode a transaction into the rows it would insert. Writes nothing. */
 export function transactionRows(
@@ -538,8 +680,10 @@ export function transactionRows(
   const invocation = decodeInvocation(tx.envelopeXdr);
   const sourceAccount = sourceAccountOf(tx.envelopeXdr);
 
+  const shouldIndexInvocation =
+    invocation !== null && isIndexedContract(invocation.contractId, contractFilter);
   const invocations: Prisma.InvocationCreateManyInput[] =
-    invocation && isIndexedContract(invocation.contractId, contractFilter)
+    shouldIndexInvocation && invocation
       ? [
           {
             txHash: tx.txHash,
@@ -554,6 +698,18 @@ export function transactionRows(
               tx.status === "SUCCESS" ? extractInvocationReturnValue(tx.resultMetaXdr) : null,
           },
         ]
+      : [];
+  const invocationStorageChanges: PendingInvocationStorageChange[] =
+    shouldIndexInvocation && tx.status === "SUCCESS"
+      ? extractInvocationStorageChanges(tx.resultMetaXdr)
+          .filter((change) => isIndexedContract(change.contractId, contractFilter))
+          .map((change) => ({
+            ...change,
+            txHash: tx.txHash,
+            ledger: tx.ledger,
+            createdAt,
+            invocationTxHash: tx.txHash,
+          }))
       : [];
 
   const contract =
@@ -626,7 +782,7 @@ export function transactionRows(
       createdAt,
     }));
 
-  return { invocations, contracts, storageChanges, events, tokenEvents };
+  return { invocations, invocationStorageChanges, contracts, storageChanges, events, tokenEvents };
 }
 
 async function collectTransactionRows(
@@ -636,6 +792,7 @@ async function collectTransactionRows(
 ): Promise<TransactionRows> {
   const rows: TransactionRows = {
     invocations: [],
+    invocationStorageChanges: [],
     contracts: [],
     storageChanges: [],
     events: [],
@@ -644,6 +801,7 @@ async function collectTransactionRows(
   for (const tx of transactions) {
     const txRows = transactionRows(tx, contractFilter);
     rows.invocations.push(...txRows.invocations);
+    rows.invocationStorageChanges.push(...txRows.invocationStorageChanges);
     rows.contracts.push(...txRows.contracts);
     rows.storageChanges.push(...txRows.storageChanges);
     rows.events.push(...txRows.events);
@@ -663,6 +821,25 @@ async function insertTransactionRows(rows: TransactionRows, db: Db): Promise<voi
   if (rows.invocations.length > 0) {
     const result = await db.invocation.createMany({ data: rows.invocations, skipDuplicates: true });
     metricRowsWritten.inc({ table: "invocation" }, result.count);
+  }
+  if (rows.invocationStorageChanges.length > 0) {
+    const txHashes = [...new Set(rows.invocationStorageChanges.map((change) => change.invocationTxHash))];
+    const records = await db.invocation.findMany({
+      where: { txHash: { in: txHashes } },
+      select: { id: true, txHash: true },
+    });
+    const invocationIds = new Map(records.map((record) => [record.txHash, record.id]));
+    const changes = rows.invocationStorageChanges.flatMap(({ invocationTxHash, ...change }) => {
+      const invocationId = invocationIds.get(invocationTxHash);
+      return invocationId ? [{ ...change, invocationId }] : [];
+    });
+    if (changes.length > 0) {
+      const result = await db.invocationStorageChange.createMany({
+        data: changes,
+        skipDuplicates: true,
+      });
+      metricRowsWritten.inc({ table: "invocationStorageChange" }, result.count);
+    }
   }
   if (rows.contracts.length > 0) {
     const result = await db.contract.createMany({ data: rows.contracts, skipDuplicates: true });
@@ -768,6 +945,88 @@ function errorMessage(err: unknown): string {
     return String((err as { message: unknown }).message);
   }
   return String(err);
+}
+
+/**
+ * Delete events and invocations older than the retention window (#72). Contracts are
+ * permanent and never pruned. Returns the number of rows deleted per table.
+ */
+export async function pruneOldRecords(
+  days: number | null,
+  db: Db = prisma,
+  now: number = Date.now()
+): Promise<{
+  events: number;
+  tokenEvents: number;
+  invocations: number;
+  invocationStorageChanges: number;
+}> {
+  const cutoff = retentionCutoff(days, now);
+  if (cutoff === null) {
+    return { events: 0, tokenEvents: 0, invocations: 0, invocationStorageChanges: 0 };
+  }
+
+  const events = await db.contractEventRecord.deleteMany({
+    where: { createdAt: { lt: cutoff } },
+  });
+  const tokenEvents = await db.tokenEvent.deleteMany({
+    where: { createdAt: { lt: cutoff } },
+  });
+  const invocationStorageChanges = await db.invocationStorageChange.deleteMany({
+    where: { createdAt: { lt: cutoff } },
+  });
+  const invocations = await db.invocation.deleteMany({
+    where: { createdAt: { lt: cutoff } },
+  });
+  return {
+    events: events.count,
+    tokenEvents: tokenEvents.count,
+    invocations: invocations.count,
+    invocationStorageChanges: invocationStorageChanges.count,
+  };
+}
+
+/** Run pruning once and log the pruned row count. Never throws. */
+export async function runPrune(
+  days: number | null = RETENTION_DAYS,
+  db: Db = prisma
+): Promise<void> {
+  if (days === null) return;
+  try {
+    const { events, tokenEvents, invocations, invocationStorageChanges } = await pruneOldRecords(
+      days,
+      db
+    );
+    metricRowsPruned.inc({ table: "contractEventRecord" }, events);
+    metricRowsPruned.inc({ table: "tokenEvent" }, tokenEvents);
+    metricRowsPruned.inc({ table: "invocation" }, invocations);
+    metricRowsPruned.inc({ table: "invocationStorageChange" }, invocationStorageChanges);
+    log.info("pruned expired indexer rows", {
+      days,
+      contractEvents: events,
+      tokenEvents,
+      invocations,
+      invocationStorageChanges,
+    });
+  } catch (err) {
+    log.error("retention pruning failed", { err });
+  }
+}
+
+/** Prune now, then once per PRUNE_INTERVAL_MS until the returned timer is cleared. */
+export function startPruneSchedule(
+  days: number | null = RETENTION_DAYS,
+  intervalMs: number = PRUNE_INTERVAL_MS
+): NodeJS.Timeout | null {
+  if (days === null) {
+    log.info("retention pruning disabled; INDEXER_RETENTION_DAYS is unset");
+    return null;
+  }
+  log.info("starting retention pruning", { days, intervalMs });
+  void runPrune(days);
+  const timer = setInterval(() => void runPrune(days), intervalMs);
+  timer.unref();
+  return timer;
 }
 
 /** Where a page leaves the cursor, plus any ledger range the page skipped without indexing. */
@@ -898,6 +1157,7 @@ export async function commitPage(
 
 export async function main(): Promise<void> {
   const network = await server.getHealth();
+  failover.recordSuccess();
   const existing = await findCursor();
   if (existing && process.env.INDEXER_START_LEDGER) {
     log.warn("INDEXER_START_LEDGER is ignored because the cursor already exists", {
@@ -920,6 +1180,7 @@ export async function main(): Promise<void> {
 
   const healthServer = startHealthServer();
   const metricsServer = startMetricsServer();
+  const pruneTimer = startPruneSchedule();
   process.once("SIGTERM", requestShutdown);
   process.once("SIGINT", requestShutdown);
 
@@ -952,11 +1213,13 @@ export async function main(): Promise<void> {
         }
       }
       consecutiveFailures = 0;
+      failover.recordSuccess();
       health.lastPollFailed = false;
-      metricLag.set(Math.max(0, health.latestLedger - health.cursor));
+      recordLag(health.latestLedger, health.cursor);
       delayMs = caughtUp ? POLL_INTERVAL_MS : 0;
     } catch (err) {
       consecutiveFailures++;
+      failover.recordFailure();
       health.lastPollFailed = true;
       metricErrors.inc();
       delayMs = backoffDelay(consecutiveFailures);
@@ -966,6 +1229,7 @@ export async function main(): Promise<void> {
   }
 
   log.info("shutting down", { cursor });
+  if (pruneTimer) clearInterval(pruneTimer);
   await setCursor(cursor, paginationCursor);
   healthServer.close();
   metricsServer.close();

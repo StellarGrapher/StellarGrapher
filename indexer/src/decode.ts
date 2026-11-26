@@ -307,6 +307,120 @@ function expandInstanceEntry(
   return out;
 }
 
+export interface DecodedInvocationStorageChange {
+  contractId: string;
+  durability: "persistent" | "temporary" | "instance";
+  key: string;
+  valueBefore: string | null;
+  valueAfter: string | null;
+}
+
+interface StorageEntrySnapshot {
+  contractId: string;
+  durability: DecodedInvocationStorageChange["durability"];
+  key: string;
+  value: string | null;
+}
+
+function storageEntrySnapshot(entry: xdr.LedgerEntry): StorageEntrySnapshot | null {
+  const data = entry.data();
+  if (data.switch().name !== "contractData") return null;
+  const cd = data.contractData();
+  const contractId = Address.fromScAddress(cd.contract()).toString();
+  if (cd.key().switch().name === "scvLedgerKeyContractInstance") {
+    return { contractId, durability: "instance", key: "__instance__", value: scValToDisplay(cd.val()) };
+  }
+  return {
+    contractId,
+    durability: cd.durability().name as "persistent" | "temporary",
+    key: scValToDisplay(cd.key()),
+    value: scValToDisplay(cd.val()),
+  };
+}
+
+function storageKeySnapshot(key: xdr.LedgerKey): StorageEntrySnapshot | null {
+  if (key.switch().name !== "contractData") return null;
+  const cd = key.contractData();
+  const contractId = Address.fromScAddress(cd.contract()).toString();
+  if (cd.key().switch().name === "scvLedgerKeyContractInstance") {
+    return { contractId, durability: "instance", key: "__instance__", value: null };
+  }
+  return {
+    contractId,
+    durability: cd.durability().name as "persistent" | "temporary",
+    key: scValToDisplay(cd.key()),
+    value: null,
+  };
+}
+
+/**
+ * Pair the before/after values of every contract storage entry an invocation
+ * touched. "Before" comes from the meta's ledgerEntryState changes, "after"
+ * from created/updated entries; a removed entry has no after value and a
+ * created entry has no before value. Entries whose value did not change are
+ * dropped, so the result is exactly the set of modified keys.
+ */
+export function extractInvocationStorageChanges(
+  meta: xdr.TransactionMeta
+): DecodedInvocationStorageChange[] {
+  const switchValue = meta.switch();
+  const v = switchValue === 4 ? meta.v4() : switchValue === 3 ? meta.v3() : null;
+  if (!v) return [];
+
+  const before = new Map<string, StorageEntrySnapshot>();
+  const after = new Map<string, StorageEntrySnapshot>();
+  const order: string[] = [];
+  const idOf = (s: StorageEntrySnapshot) => `${s.contractId}|${s.durability}|${s.key}`;
+  const track = (s: StorageEntrySnapshot) => {
+    const id = idOf(s);
+    if (!before.has(id) && !after.has(id)) order.push(id);
+  };
+
+  for (const opMeta of v.operations()) {
+    for (const change of opMeta.changes()) {
+      const kind = change.switch().name;
+      if (kind === "ledgerEntryState") {
+        const snapshot = storageEntrySnapshot(change.state());
+        if (!snapshot) continue;
+        track(snapshot);
+        before.set(idOf(snapshot), snapshot);
+        continue;
+      }
+      if (kind === "ledgerEntryRemoved") {
+        const snapshot = storageKeySnapshot(change.removed());
+        if (!snapshot) continue;
+        track(snapshot);
+        after.set(idOf(snapshot), snapshot);
+        continue;
+      }
+      if (kind !== "ledgerEntryCreated" && kind !== "ledgerEntryUpdated") continue;
+      const entry = kind === "ledgerEntryCreated" ? change.created() : change.updated();
+      const snapshot = storageEntrySnapshot(entry);
+      if (!snapshot) continue;
+      track(snapshot);
+      after.set(idOf(snapshot), snapshot);
+    }
+  }
+
+  const out: DecodedInvocationStorageChange[] = [];
+  for (const id of order) {
+    const b = before.get(id);
+    const a = after.get(id);
+    const valueBefore = b?.value ?? null;
+    const valueAfter = a?.value ?? null;
+    if (valueBefore === valueAfter) continue;
+    const base = (a ?? b)!;
+    out.push({
+      contractId: base.contractId,
+      durability: base.durability,
+      key: base.key,
+      valueBefore,
+      valueAfter,
+    });
+  }
+  return out;
+}
+
 export interface DecodedEvent {
   eventId: string;
   eventIndex: number;

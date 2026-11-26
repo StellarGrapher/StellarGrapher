@@ -119,6 +119,27 @@ model StorageChange {
   @@index([contractId, ledger])
 }
 
+// Per-invocation before/after view of a contract storage entry, derived from
+// the transaction meta's ledgerEntryState (before) and created/updated/removed
+// (after) changes. Unlike StorageChange this is keyed by invocation, so a
+// caller can answer "what did this call change?" directly.
+model InvocationStorageChange {
+  id           String   @id @default(cuid())
+  invocationId String
+  contractId   String
+  durability   String // persistent | temporary | instance
+  key          String // human-readable decoded key ("__instance__" for the contract instance entry)
+  valueBefore  String? // decoded value before the invocation; null when the key did not exist
+  valueAfter   String? // decoded value after the invocation; null when the key was removed
+  ledger       Int
+  txHash       String
+  createdAt    DateTime
+
+  @@unique([invocationId, key, durability])
+  @@index([invocationId])
+  @@index([contractId, ledger])
+}
+
 model ContractEventRecord {
   id         String   @id @default(cuid())
   eventId    String   @unique

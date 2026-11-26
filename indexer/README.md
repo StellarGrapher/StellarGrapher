@@ -47,6 +47,8 @@ docker compose up
 | -------------------- | ------------------------------------ | ------------------------------------ |
 | `DATABASE_URL`       | *(required)*                         | PostgreSQL connection string         |
 | `SOROBAN_RPC_URL`    | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint to poll        |
+| `SOROBAN_RPC_URLS`   | *(unset)*                            | Comma-separated RPC endpoints; the first is the primary and the rest are failover targets. Overrides `SOROBAN_RPC_URL` |
+| `SOROBAN_RPC_FAILOVER_THRESHOLD` | `3`                    | Consecutive failures before switching to the next RPC endpoint |
 | `INDEXER_POLL_INTERVAL_MS` | `6000`                         | Milliseconds between poll cycles; must be a positive integer |
 | `HEALTH_PORT`        | `8080`                               | Port for the `GET /healthz` endpoint |
 | `METRICS_LISTEN_ADDR` | `127.0.0.1:9090`                    | Listen address (`host:port`) for the Prometheus `GET /metrics` endpoint |
@@ -54,6 +56,7 @@ docker compose up
 | `INDEXER_START_LEDGER` | *(latest ledger)*                  | First ledger to index on a fresh database; must be inside the RPC node's retention window. Ignored once a cursor exists |
 | `INDEXER_CONTRACT_IDS` | *(all contracts)*                 | Comma-separated contract IDs to index. Empty or unset indexes every contract; invalid IDs abort startup |
 | `ADMIN_TOKEN`        | *(unset — admin API disabled)*       | Bearer token required by `POST /admin/reindex` |
+| `INDEXER_RETENTION_DAYS` | *(unset — unlimited)*             | Days of events and invocations to keep. A daily task deletes older rows; contracts are never pruned |
 
 ## Admin Re-indexing
 
@@ -249,6 +252,20 @@ Append-only log of every observed change to a contract storage entry. The "curre
 | `ledger`      | `Int`    | Ledger sequence number                           |
 | `txHash`      | `String` | Transaction hash                                 |
 
+### `invocation_storage_changes`
+Per-invocation before/after view of the contract storage entries an invocation modified, derived from the transaction meta (`ledgerEntryState` = before, `created`/`updated`/`removed` = after). Query by `invocationId` to see exactly what a call changed.
+
+| Column         | Type      | Description                                              |
+| -------------- | --------- | -------------------------------------------------------- |
+| `invocationId` | `String`  | `Invocation.id` of the call that made the change         |
+| `contractId`   | `String`  | Contract address                                         |
+| `durability`   | `String`  | `persistent` / `temporary` / `instance`                  |
+| `key`          | `String`  | Human-readable decoded key (`__instance__` for the instance entry) |
+| `valueBefore`  | `String?` | Decoded value before the invocation (null when created)  |
+| `valueAfter`   | `String?` | Decoded value after the invocation (null when removed)   |
+| `ledger`       | `Int`     | Ledger sequence number                                   |
+| `txHash`       | `String`  | Transaction hash                                         |
+
 ### `contract_event_records`
 One row per contract event emitted.
 
@@ -268,6 +285,10 @@ One row per ledger range the live indexer skipped without indexing, because the 
 | `fromLedger`  | `Int`    | First ledger skipped                 |
 | `toLedger`    | `Int`    | Last ledger skipped                  |
 | `reason`      | `String` | Why the range was skipped            |
+
+## Data Retention
+
+When `INDEXER_RETENTION_DAYS` is set, the indexer runs a pruning task at startup and then once every 24 hours. It deletes contract events, token events, invocation storage changes, and invocations whose `createdAt` is older than the window and logs the pruned row counts (also exported as `indexer_rows_pruned_total`). The `contracts` table is permanent and is never pruned. Unset, retention is unlimited and no pruning runs.
 
 ## Failure Behaviour
 
@@ -296,8 +317,10 @@ It returns `200` when the last poll succeeded and `lag` (`latestLedger - cursor`
 | `indexer_events_indexed_total` | counter | Contract events indexed |
 | `indexer_errors_total` | counter | Errors encountered while polling/indexing |
 | `indexer_lag_ledgers` | gauge | Ledgers between the indexer cursor and the network latest ledger |
+| `indexer_rows_pruned_total` | counter | Rows removed by the retention task, partitioned by table |
 
 Default Node.js process metrics are also exposed.
+The indexer also logs its ledger lag every 60 seconds.
 
 ## Retention Gap
 

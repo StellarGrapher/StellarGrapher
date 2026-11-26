@@ -5,7 +5,7 @@ import {
   findIncompleteBackfill,
   clearBackfillCursor,
 } from "./db.js";
-import { PAGE_LIMIT, insertTransactions, server } from "./index.js";
+import { PAGE_LIMIT, insertTransactions, server, failover } from "./index.js";
 import { log } from "./logger.js";
 
 /** Persist the checkpoint at least every this many ledgers. */
@@ -74,6 +74,7 @@ export async function backfill(
           startLedger: Math.max(fromLedger, state.lastLedger + 1),
           pagination: { limit: PAGE_LIMIT },
         });
+    failover.recordSuccess();
 
     let lastLedger = state.lastLedger;
     let reachedEnd = false;
