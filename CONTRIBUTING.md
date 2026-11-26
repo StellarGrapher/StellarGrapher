@@ -67,6 +67,34 @@ Run the linter before submitting:
 cd frontend && npm run lint
 ```
 
+## Changelog
+
+Every pull request that adds a feature, fixes a bug, or makes a breaking change
+**must** include a changelog entry in `CHANGELOG.md` under the `[Unreleased]`
+section.
+
+Format:
+
+```markdown
+### Added / Changed / Fixed / Removed / Security
+
+- Short description of the user-visible change (PR #NNN)
+```
+
+If your change is purely internal (CI config, test-only, dev-tooling, typo fix)
+you may skip the changelog entry.
+
+## Release process
+
+Releases are cut from `main` by a maintainer:
+
+1. Update `CHANGELOG.md` — rename `[Unreleased]` to `[X.Y.Z] — YYYY-MM`, add a
+   new empty `[Unreleased]` section, and update the comparison links at the bottom.
+2. Commit with the message `chore: release vX.Y.Z`.
+3. Create a git tag `vX.Y.Z` and push it.
+4. GitHub Actions publishes the Docker images and creates a GitHub Release with
+   the changelog section as the release notes body.
+
 ## Issues
 
 Check open issues for tasks labeled `good first issue` or `help wanted`.

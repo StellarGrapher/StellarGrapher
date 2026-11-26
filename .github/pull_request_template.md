@@ -4,6 +4,10 @@
 
 Closes #
 
+## Changelog
+
+- [ ] Added a `CHANGELOG.md` entry under `[Unreleased]` (skip for CI/test-only/typo changes)
+
 ## Checks
 
 Run the checks for the parts you touched. CI runs the same commands.
