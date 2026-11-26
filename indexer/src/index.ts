@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
 import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
+import { log } from "./logger.js";
 import {
   decodeContractCreation,
   decodeInvocation,
@@ -17,7 +18,7 @@ import {
 function requireEnv(name: string, fallback?: string): string {
   const val = process.env[name] ?? fallback;
   if (val === undefined) {
-    console.error(`[indexer] fatal: environment variable ${name} is required but not set`);
+    log.error("environment variable is required but not set", { envVar: name, fatal: true });
     process.exit(1);
   }
   return val;
@@ -28,9 +29,7 @@ function requirePositiveInt(name: string, fallback: number): number {
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
-    console.error(
-      `[indexer] fatal: ${name} must be a positive integer, got "${raw}"`
-    );
+    log.error("environment variable must be a positive integer", { envVar: name, value: raw, fatal: true });
     process.exit(1);
   }
   return n;
@@ -161,15 +160,13 @@ function startHealthServer(): Server {
     res.writeHead(404).end();
   });
   httpServer.listen(HEALTH_PORT, () => {
-    console.log(
-      `[indexer] health endpoint listening on port ${HEALTH_PORT} (GET /healthz, GET /metrics)`
-    );
+    log.info("health endpoint listening", { port: HEALTH_PORT, routes: ["/healthz", "/metrics"] });
   });
   return httpServer;
 }
 
 function requestShutdown(signal: NodeJS.Signals): void {
-  console.log(`[indexer] ${signal} received, stopping after the current page`);
+  log.info("shutdown signal received, stopping after the current page", { signal });
   stopping = true;
   wakeFromSleep();
 }
@@ -305,10 +302,11 @@ async function fetchPage(
     const oldestMatch = message.match(/oldest ledger:\s*(\d+)/i);
     const latestMatch = message.match(/latest ledger:\s*(\d+)/i);
     if (oldestMatch && Number(oldestMatch[1]) > cursor + 1) {
-      console.warn(
-        `[indexer] ledger ${cursor + 1} is before the RPC node's retention window (oldest: ${oldestMatch[1]}) — ` +
-          `skipping ahead to ${latestLedger}. Some history in the gap was missed.`
-      );
+      log.warn("ledger is before the RPC node's retention window, skipping ahead; history in the gap was missed", {
+        requestedLedger: cursor + 1,
+        oldestAvailable: Number(oldestMatch[1]),
+        skippingTo: latestLedger,
+      });
       return {
         transactions: [],
         progress: {
@@ -370,9 +368,10 @@ async function main(): Promise<void> {
   const network = await server.getHealth();
   const existing = await findCursor();
   if (existing && process.env.INDEXER_START_LEDGER) {
-    console.warn(
-      `[indexer] INDEXER_START_LEDGER is ignored: the cursor already exists at ledger ${existing.lastLedger}`
-    );
+    log.warn("INDEXER_START_LEDGER is ignored because the cursor already exists", {
+      cursorLedger: existing.lastLedger,
+      requested: process.env.INDEXER_START_LEDGER,
+    });
   }
   const initialCursor =
     existing ?? (await seedCursor(seedLastLedger(process.env.INDEXER_START_LEDGER, network)));
@@ -380,7 +379,7 @@ async function main(): Promise<void> {
   let paginationCursor = initialCursor.paginationCursor;
   health.cursor = cursor;
   health.latestLedger = network.latestLedger;
-  console.log(`[indexer] starting at ledger ${cursor} (network is at ${network.latestLedger})`);
+  log.info("starting", { cursor, latestLedger: network.latestLedger });
 
   const healthServer = startHealthServer();
   process.once("SIGTERM", requestShutdown);
@@ -407,7 +406,7 @@ async function main(): Promise<void> {
           cursor = progress.lastLedger;
           paginationCursor = progress.paginationCursor;
           health.cursor = cursor;
-          console.log(`[indexer] processed through ledger ${cursor}`);
+          log.info("processed through ledger", { cursor });
         }
         caughtUp = cursor >= latestNow.sequence && !paginationCursor;
         if (page.transactions.length > 0) {
@@ -423,15 +422,12 @@ async function main(): Promise<void> {
       health.lastPollFailed = true;
       metricPollErrors.inc();
       delayMs = backoffDelay(consecutiveFailures);
-      console.error(
-        `[indexer] poll error (failure ${consecutiveFailures}), retrying in ${delayMs}ms:`,
-        err
-      );
+      log.error("poll failed, retrying", { consecutiveFailures, retryInMs: delayMs, err });
     }
     if (!stopping) await sleep(delayMs);
   }
 
-  console.log("[indexer] shutting down");
+  log.info("shutting down", { cursor });
   await setCursor(cursor, paginationCursor);
   healthServer.close();
   await prisma.$disconnect();
@@ -440,7 +436,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch(async (err) => {
-    console.error("[indexer] fatal error:", err);
+    log.error("fatal error", { err });
     await prisma.$disconnect();
     process.exit(1);
   });
