@@ -420,7 +420,10 @@ mod edge_case_tests {
         let who = Address::generate(&env);
 
         // Initialized was published by setup().
-        let initialized = Initialized { admin: admin.clone() }.to_xdr(&env, &client.address);
+        let initialized = Initialized {
+            admin: admin.clone(),
+        }
+        .to_xdr(&env, &client.address);
         assert_eq!(env.events().all().events().first(), Some(&initialized));
 
         client.bump(&1);
@@ -446,11 +449,7 @@ mod edge_case_tests {
                 expires_at: env.ledger().sequence() + 5,
             }
             .to_xdr(&env, &client.address),
-            AmountsTallied {
-                count: 2,
-                total: 3,
-            }
-            .to_xdr(&env, &client.address),
+            AmountsTallied { count: 2, total: 3 }.to_xdr(&env, &client.address),
         ];
         for event in expected.iter() {
             assert!(events.contains(event), "missing event {event:?}");
@@ -514,6 +513,9 @@ mod edge_case_tests {
         }
         // Round-trip through the ScVal encoding used for storage.
         let encoded: soroban_sdk::Val = DataKey::Note(a.clone()).try_into_val(&env).unwrap();
-        assert_eq!(DataKey::try_from_val(&env, &encoded).unwrap(), DataKey::Note(a));
+        assert_eq!(
+            DataKey::try_from_val(&env, &encoded).unwrap(),
+            DataKey::Note(a)
+        );
     }
 }
