@@ -8,6 +8,7 @@ import InvokeTool from "@/components/InvokeTool";
 import LiveEventLog from "@/components/LiveEventLog";
 import CopyButton from "@/components/CopyButton";
 import SectionHeader from "@/components/SectionHeader";
+import Breadcrumb from "@/components/Breadcrumb";
 import { EVENT_PAGE_SIZE, INVOCATION_PAGE_SIZE } from "@/lib/contract-lists";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +34,27 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
+const TTL_DOCS_URL = "https://developers.stellar.org/docs/learn/smart-contract-internals/state-archival";
+
+function TtlBadge({ ttl }: { ttl: number | null | undefined }) {
+  if (ttl == null) return null;
+  if (ttl < 100) {
+    return (
+      <span className="shrink-0 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white">
+        Critical: expires in {ttl.toLocaleString()} ledgers
+      </span>
+    );
+  }
+  if (ttl < 1000) {
+    return (
+      <span className="shrink-0 rounded bg-orange-500 px-2 py-1 text-xs font-semibold text-white">
+        Warning: expires in {ttl.toLocaleString()} ledgers
+      </span>
+    );
+  }
+  return null;
+}
+
 export default async function ContractPage({ params }: Props) {
   const contractId = params.id;
   const info = await getContractInfo(contractId);
@@ -46,12 +68,45 @@ export default async function ContractPage({ params }: Props) {
   const rpcFallback = !isIndexerConfigured();
   const storageCount = fullStorage.length > 0 ? fullStorage.length : (info?.instanceStorage ?? []).length;
 
+  const wasmSizeKb = wasm?.size != null ? wasm.size / 1024 : null;
+
+  const expirationLedger = info?.liveUntilLedgerSeq ?? null;
+  const ttl = info?.ttl ?? null;
+
   return (
     <div>
+      <Breadcrumb
+        items={[
+          { label: "Home", href: "/" },
+          { label: "Contracts", href: "/contracts" },
+          { label: contractId },
+        ]}
+      />
       <h1 className="text-2xl font-bold mb-1">Contract</h1>
       <div className="flex items-start gap-2 mb-8">
         <p className="text-prism-muted font-mono text-sm break-all">{contractId}</p>
         <CopyButton value={contractId} what="contract ID" />
+        {wasmSizeKb != null && (
+          <span className="ml-auto shrink-0 rounded bg-prism-surface px-2 py-1 text-xs font-mono text-prism-muted">
+            WASM: {wasmSizeKb.toFixed(2)} KB
+          </span>
+        )}
+      </div>
+
+      <div className="mb-8 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-prism-muted">Expiration ledger:</span>
+        <span className="font-mono">
+          {expirationLedger != null ? expirationLedger.toLocaleString() : "—"}
+        </span>
+        <TtlBadge ttl={ttl} />
+        <a
+          href={TTL_DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-prism-accent underline hover:no-underline"
+        >
+          Extend TTL
+        </a>
       </div>
 
       <div className="grid grid-cols-1 gap-8">
@@ -88,6 +143,7 @@ export default async function ContractPage({ params }: Props) {
             derivedFromEvents={rpcFallback}
             title="Recent Invocations"
             stickyHeader
+            exportCsv
           />
         </section>
 
@@ -102,6 +158,7 @@ export default async function ContractPage({ params }: Props) {
             specs={wasm?.events}
             title="Events"
             stickyHeader
+            exportCsv
           />
         </section>
       </div>

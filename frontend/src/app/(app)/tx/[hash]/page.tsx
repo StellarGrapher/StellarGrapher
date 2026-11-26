@@ -8,7 +8,7 @@ import { decodeInvocations, decodeTransactionFailure, getResourceUsage } from "@
 import { formatDate, formatFee, stroopsToXlm, formatNumber } from "@/lib/format";
 import { notFound } from "next/navigation";
 import DetailRow from "@/components/DetailRow";
-import Skeleton from "@/components/Skeleton";
+import Breadcrumb from "@/components/Breadcrumb";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +75,13 @@ export default async function TxPage({ params }: Props) {
 
   return (
     <div>
+      <Breadcrumb
+        items={[
+          { label: "Home", href: "/" },
+          { label: "Transactions", href: "/tx" },
+          { label: params.hash },
+        ]}
+      />
       <h1 className="text-2xl font-bold mb-1">Transaction</h1>
       <div className="flex items-start gap-2 mb-8">
         <p className="text-prism-muted font-mono text-sm break-all">{params.hash}</p>

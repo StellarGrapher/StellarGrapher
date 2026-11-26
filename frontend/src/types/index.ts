@@ -85,6 +85,7 @@ export interface ContractInfo {
   executable: "wasm" | "stellar_asset";
   wasmHash?: string;
   liveUntilLedgerSeq?: number;
+  ttl?: number;
   lastModifiedLedgerSeq?: number;
   instanceStorage: StorageEntry[];
   assetDetails?: {

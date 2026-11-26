@@ -83,9 +83,20 @@ export async function getContractInfo(contractId: string): Promise<ContractInfo 
     return null;
   }
 
+  let ttl: number | undefined;
+  if (info.liveUntilLedgerSeq !== undefined) {
+    try {
+      const latest = await server().getLatestLedger();
+      ttl = Math.max(0, info.liveUntilLedgerSeq - latest.sequence);
+    } catch (err) {
+      console.warn("[soroban] could not fetch latest ledger for contract TTL", err);
+    }
+  }
+
   const indexed = await getIndexedContract(contractId);
   return {
     ...info,
+    ttl,
     creator: indexed?.creator,
     deploymentLedger: indexed?.deploymentLedger,
   };

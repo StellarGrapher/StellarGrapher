@@ -64,6 +64,17 @@ export async function OPTIONS(req: Request) {
   return new NextResponse(null, { status: 204, headers: corsHeaders(req) });
 }
 
+function csvCell(value: unknown): string {
+  const text =
+    value === null || value === undefined
+      ? ""
+      : typeof value === "string"
+        ? value
+        : JSON.stringify(value) ?? String(value);
+  const safeText = /^[\t\r ]*[=+\-@]/.test(text) ? `'${text}` : text;
+  return /[",\n\r]/.test(safeText) ? `"${safeText.replace(/"/g, '""')}"` : safeText;
+}
+
 export async function GET(req: Request, { params }: Params) {
   const cors = corsHeaders(req);
 
@@ -78,7 +89,43 @@ export async function GET(req: Request, { params }: Params) {
     return limited;
   }
 
-  const request = parsePageRequest(new URL(req.url), INVOCATION_PAGE_SIZE);
+  const url = new URL(req.url);
+  const format = url.searchParams.get("format");
+
+  if (format === "csv") {
+    const request = parsePageRequest(url, INVOCATION_PAGE_SIZE);
+    if (!request) {
+      return NextResponse.json({ error: "Invalid cursor" }, { status: 400, headers: cors });
+    }
+
+    const { items } = await getInvocationHistoryPage(params.id, request);
+    const header = ["ledger", "timestamp", "txHash", "function", "args", "successful"];
+    const rows = items.map((invocation) =>
+      [
+        invocation.ledger,
+        invocation.timestamp,
+        invocation.txHash,
+        invocation.functionName ?? "",
+        invocation.args ?? [],
+        invocation.successful,
+      ]
+        .map(csvCell)
+        .join(",")
+    );
+    const csv = [header.join(","), ...rows].join("\n");
+    const fileId = params.id.replace(/[^A-Za-z0-9_-]/g, "_");
+
+    return new NextResponse(csv, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="invocations-${fileId}.csv"`,
+        ...cors,
+      },
+    });
+  }
+
+  const request = parsePageRequest(url, INVOCATION_PAGE_SIZE);
   if (!request) {
     return NextResponse.json({ error: "Invalid cursor" }, { status: 400, headers: cors });
   }
