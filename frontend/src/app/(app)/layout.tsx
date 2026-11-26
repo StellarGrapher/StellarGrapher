@@ -4,6 +4,7 @@ import "../globals.css";
 import Navbar from "@/components/Navbar";
 import ConfigWarning from "@/components/ConfigWarning";
 import Footer from "@/components/Footer";
+import { NetworkProvider } from "@/components/NetworkProvider";
 
 export const metadata: Metadata = {
   metadataBase: new URL(config.siteUrl),
@@ -30,12 +31,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <ConfigWarning />
-        <Navbar />
-        <main className="min-h-screen max-w-7xl mx-auto px-4 py-8">
-          {children}
-        </main>
-        <Footer />
+        <NetworkProvider>
+          <ConfigWarning />
+          <Navbar />
+          <main className="min-h-screen max-w-7xl mx-auto px-4 py-8">
+            {children}
+          </main>
+          <Footer />
+        </NetworkProvider>
       </body>
     </html>
   );

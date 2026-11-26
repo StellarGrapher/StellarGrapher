@@ -81,6 +81,11 @@ describe("getContractInfo", () => {
     await expect(getContractInfo("contract-id")).resolves.toBeNull();
   });
 
+  it("rethrows RPC transport failures so callers can distinguish outages", async () => {
+    vi.spyOn(rpc.Server.prototype, "getContractData").mockRejectedValue(new Error("fetch failed"));
+    await expect(getContractInfo("contract-id")).rejects.toThrow("fetch failed");
+  });
+
   it("includes indexed deployment information", async () => {
     vi.mocked(isIndexerConfigured).mockReturnValue(true);
     vi.mocked(getIndexedContract).mockResolvedValue({

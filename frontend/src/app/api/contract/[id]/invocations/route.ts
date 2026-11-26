@@ -75,6 +75,23 @@ function csvCell(value: unknown): string {
   return /[",\n\r]/.test(safeText) ? `"${safeText.replace(/"/g, '""')}"` : safeText;
 }
 
+const SORTABLE_FIELDS = ["ledger", "timestamp", "function"] as const;
+type SortField = (typeof SORTABLE_FIELDS)[number];
+type SortDirection = "asc" | "desc";
+
+function isSortField(value: string): value is SortField {
+  return SORTABLE_FIELDS.some((field) => field === value);
+}
+
+function parseSort(url: URL): { field: SortField; direction: SortDirection } | null {
+  const field = url.searchParams.get("sort");
+  const direction = url.searchParams.get("dir");
+  if (field === null && direction === null) return null;
+  if (!field || !isSortField(field)) return null;
+  if (direction !== null && direction !== "asc" && direction !== "desc") return null;
+  return { field, direction: direction ?? "desc" };
+}
+
 export async function GET(req: Request, { params }: Params) {
   const cors = corsHeaders(req);
 
@@ -130,6 +147,30 @@ export async function GET(req: Request, { params }: Params) {
     return NextResponse.json({ error: "Invalid cursor" }, { status: 400, headers: cors });
   }
 
+  const sort = parseSort(url);
+  if (url.searchParams.has("sort") && !sort) {
+    return NextResponse.json({ error: "Invalid sort" }, { status: 400, headers: cors });
+  }
+  if (url.searchParams.has("dir") && !sort) {
+    return NextResponse.json({ error: "Invalid sort direction" }, { status: 400, headers: cors });
+  }
   const { items, nextCursor } = await getInvocationHistoryPage(params.id, request);
-  return NextResponse.json({ invocations: items, nextCursor }, { headers: cors });
+
+  const sorted = sort
+    ? [...items].sort((a, b) => {
+        const getValue = (item: (typeof items)[number]) => {
+          if (sort.field === "function") return item.functionName ?? "";
+          return sort.field === "ledger" ? item.ledger : item.timestamp;
+        };
+        const av = getValue(a);
+        const bv = getValue(b);
+        const comparison =
+          typeof av === "number" && typeof bv === "number"
+            ? av - bv
+            : String(av).localeCompare(String(bv));
+        return sort.direction === "asc" ? comparison : -comparison;
+      })
+    : items;
+
+  return NextResponse.json({ invocations: sorted, nextCursor }, { headers: cors });
 }

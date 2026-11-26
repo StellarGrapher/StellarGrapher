@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getContractInfo, getContractWasmInfo } from "@/lib/soroban";
+import { getContractInfo, getContractWasmInfo, isRpcUnreachableError } from "@/lib/soroban";
 import { getIndexedGaps } from "@/lib/indexed-db";
 import { rateLimitRequest } from "@/lib/rate-limit";
 
@@ -117,11 +117,40 @@ export async function GET(req: Request, { params }: Params) {
   const limited = rateLimitRequest(req, { scope: "contract-info" });
   if (limited) return withCors(req, limited);
 
-  const [info, historyGaps] = await Promise.all([getContractInfo(params.id), getIndexedGaps()]);
+  let info: Awaited<ReturnType<typeof getContractInfo>>;
+  let historyGaps: Awaited<ReturnType<typeof getIndexedGaps>>;
+  try {
+    [info, historyGaps] = await Promise.all([getContractInfo(params.id), getIndexedGaps()]);
+  } catch (err) {
+    if (isRpcUnreachableError(err)) {
+      return withCors(
+        req,
+        NextResponse.json(
+          {
+            error: "RPC unreachable",
+            code: "RPC_UNREACHABLE",
+            rpcUrl: process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ?? null,
+            docsUrl: "https://github.com/prism-explorer/prism#self-hosting",
+          },
+          { status: 502 }
+        )
+      );
+    }
+    throw err;
+  }
+
   if (!info) {
     return withCors(
       req,
-      NextResponse.json({ error: "Contract not found or unreachable" }, { status: 404 })
+      NextResponse.json(
+        {
+          error: "Contract not found or unreachable",
+          code: "CONTRACT_NOT_FOUND",
+          rpcUrl: process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ?? null,
+          docsUrl: "https://github.com/prism-explorer/prism#self-hosting",
+        },
+        { status: 404 }
+      )
     );
   }
   const wasm = info.executable === "wasm" ? await getContractWasmInfo(params.id) : null;

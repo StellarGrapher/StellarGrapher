@@ -34,6 +34,13 @@ function server(): rpc.Server {
   return _server;
 }
 
+export function isRpcUnreachableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed|network|unreachable|timeout|socket hang up/i.test(
+    message,
+  );
+}
+
 /**
  * Read a contract's on-chain instance: executable kind (WASM vs. built-in
  * Stellar asset), WASM hash, TTL, instance storage, and asset details. Returns
@@ -79,7 +86,8 @@ export async function getContractInfo(contractId: string): Promise<ContractInfo 
         ? assetDetails 
         : undefined,
     };
-  } catch {
+  } catch (error) {
+    if (isRpcUnreachableError(error)) throw error;
     return null;
   }
 

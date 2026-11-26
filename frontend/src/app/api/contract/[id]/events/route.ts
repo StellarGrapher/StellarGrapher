@@ -56,6 +56,23 @@ function csvCell(value: unknown): string {
   return /[",\n\r]/.test(safeText) ? `"${safeText.replace(/"/g, '""')}"` : safeText;
 }
 
+const SORT_KEYS = ["ledger", "timestamp", "topic"] as const;
+type SortKey = (typeof SORT_KEYS)[number];
+type SortDir = "asc" | "desc";
+
+function isSortKey(value: string): value is SortKey {
+  return SORT_KEYS.some((key) => key === value);
+}
+
+function parseSort(url: URL): { sort: SortKey; dir: SortDir } | null {
+  const rawSort = url.searchParams.get("sort");
+  const rawDir = url.searchParams.get("dir");
+  if (rawSort === null && rawDir === null) return null;
+  if (!rawSort || !isSortKey(rawSort)) return null;
+  if (rawDir !== null && rawDir !== "asc" && rawDir !== "desc") return null;
+  return { sort: rawSort, dir: rawDir ?? "desc" };
+}
+
 export async function GET(req: Request, { params }: Params) {
   const cors = corsHeaders(req);
 
@@ -106,6 +123,14 @@ export async function GET(req: Request, { params }: Params) {
     return NextResponse.json({ error: "Invalid cursor" }, { status: 400, headers: cors });
   }
 
+  const sort = parseSort(url);
+  if (url.searchParams.has("sort") && !sort) {
+    return NextResponse.json({ error: "Invalid sort" }, { status: 400, headers: cors });
+  }
+  if (url.searchParams.has("dir") && !sort) {
+    return NextResponse.json({ error: "Invalid sort direction" }, { status: 400, headers: cors });
+  }
+
   const { items, nextCursor, error } = await getContractEventsPage(params.id, request);
 
   if (error) {
@@ -114,5 +139,25 @@ export async function GET(req: Request, { params }: Params) {
       { status: 502, headers: cors }
     );
   }
-  return NextResponse.json({ events: items, nextCursor, error: null }, { headers: cors });
+  const events = sort ? sortEvents(items, sort.sort, sort.dir) : items;
+  return NextResponse.json({ events, nextCursor, error: null }, { headers: cors });
+}
+
+function sortEvents(
+  items: Awaited<ReturnType<typeof getContractEventsPage>>["items"],
+  sort: SortKey,
+  dir: SortDir,
+): typeof items {
+  const factor = dir === "asc" ? 1 : -1;
+  const value = (item: (typeof items)[number]): number | string => {
+    if (sort === "ledger") return item.ledger ?? 0;
+    if (sort === "timestamp") return item.timestamp ?? 0;
+    return item.topic[0] ?? "";
+  };
+  return [...items].sort((a, b) => {
+    const av = value(a);
+    const bv = value(b);
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * factor;
+    return String(av).localeCompare(String(bv)) * factor;
+  });
 }
