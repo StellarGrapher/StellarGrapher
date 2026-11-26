@@ -12,6 +12,9 @@ Unreleased changes live on `main` until a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- Contract pages and APIs gain TTL details, CSV exports, bookmarks, sortable history APIs, invocation argument decoding, keyboard shortcuts, and safer XDR navigation (PRs #172, #171, #158, #157, #156, #155, #154)
+- Indexer improvements add contract filtering, batching/checkpointed backfills, token and storage-change indexing, retention, failover, and query/pool diagnostics (PRs #168, #167, #165, #164, #162, #160)
+- Local-network setup, HSTS, and contract-contribution documentation are expanded (PRs #177, #176, #175)
 - Env-var validation, metrics exposure, and pluggable rate limiter in the indexer (PR #185)
 - Postgres pool size configurable from environment (PR #183)
 - Indexer decoder fixtures from real Testnet data (PR #182)
