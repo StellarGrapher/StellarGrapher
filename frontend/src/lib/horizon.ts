@@ -113,26 +113,31 @@ interface HorizonAccount {
   signers?: unknown[];
 }
 
+/** Fetch the most recent closed ledger. */
 export async function getLatestLedger(): Promise<LedgerRecord> {
   const data = await get<HorizonPage<HorizonLedger>>("/ledgers?order=desc&limit=1");
   return mapLedger(data._embedded.records[0]);
 }
 
+/** Fetch a single ledger by its sequence number. */
 export async function getLedger(sequence: number): Promise<LedgerRecord> {
   const data = await get<HorizonLedger>(`/ledgers/${sequence}`, REVALIDATE_FINALIZED);
   return mapLedger(data);
 }
 
+/** Fetch a single transaction by its hash. Throws `HorizonError` if it is not found. */
 export async function getTransaction(hash: string): Promise<TransactionRecord> {
   const data = await get<HorizonTransaction>(`/transactions/${hash}`, REVALIDATE_FINALIZED);
   return mapTransaction(data);
 }
 
+/** Fetch the most recent transactions, newest first. */
 export async function getRecentTransactions(limit = 20): Promise<TransactionRecord[]> {
   const data = await get<HorizonPage<HorizonTransaction>>(`/transactions?order=desc&limit=${limit}`);
   return data._embedded.records.map(mapTransaction);
 }
 
+/** Fetch an account by its `G...` address, including balances, signers, and thresholds. */
 export async function getAccount(id: string): Promise<AccountRecord> {
   const data = await get<HorizonAccount>(`/accounts/${id}`);
   return mapAccount(data);

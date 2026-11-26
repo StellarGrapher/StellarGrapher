@@ -47,6 +47,9 @@ jobs:
           cache-dependency-path: indexer/package-lock.json
       - run: npm ci
       - run: npx prisma generate
+      # Fails when schema.prisma and the committed migrations diverge, so a
+      # schema change without a migration can't land.
+      - run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "file:./shadow.db" --exit-code
       - run: npx tsc --noEmit
       - run: npm run lint
       - run: npm test
@@ -84,3 +87,67 @@ jobs:
       # A broken Dockerfile should fail the pull request, not the release.
       - run: docker build --tag prism-frontend:ci frontend
       - run: docker build --tag prism-indexer:ci indexer
+
+  load-test:
+    name: Load test contract events API
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_NETWORK: testnet
+          NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
+          NEXT_PUBLIC_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+      - name: Start frontend server
+        run: |
+          npm run start > /tmp/frontend.log 2>&1 &
+          echo $! > /tmp/frontend.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/ >/dev/null 2>&1; then
+              echo "frontend ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "frontend failed to start"; cat /tmp/frontend.log; exit 1
+        env:
+          NEXT_PUBLIC_NETWORK: testnet
+          NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
+          NEXT_PUBLIC_SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+          PORT: 3000
+      - name: Install k6
+        run: |
+          K6_VERSION="${K6_VERSION:-v0.49.0}"
+          curl -fsSL \
+            "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz" \
+            -o /tmp/k6.tar.gz
+          tar -xzf /tmp/k6.tar.gz -C /tmp
+          sudo install "/tmp/k6-${K6_VERSION}-linux-amd64/k6" /usr/local/bin/k6
+          k6 version
+      - name: Run load test
+        run: k6 run --out json=k6-results.json ../../tests/load/events-load-test.js > k6-console.log 2>&1
+        env:
+          BASE_URL: http://localhost:3000
+          # A syntactically valid (but non-existent) contract id: the events
+          # endpoint answers 200 with an empty list for it, so the run measures
+          # latency rather than tripping over a malformed id. Override with the
+          # LOAD_TEST_CONTRACT_ID repository variable to target a real contract.
+          CONTRACT_ID: ${{ vars.LOAD_TEST_CONTRACT_ID || 'CAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6N4O' }}
+      - name: Upload load test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: |
+            k6-results.json
+            k6-console.log
+          retention-days: 30

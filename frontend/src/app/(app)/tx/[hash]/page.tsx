@@ -13,6 +13,10 @@ export const dynamic = "force-dynamic";
 
 interface Props { params: { hash: string } }
 
+// Decoded XDR values (e.g. ScString args, return values, memos) are attacker-
+// controlled. They are always rendered as React text children below — never via
+// dangerouslySetInnerHTML — so React escapes them and no markup is executed.
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const shortHash = `${params.hash.slice(0, 8)}…${params.hash.slice(-8)}`;
   try {
@@ -178,11 +182,35 @@ export default async function TxPage({ params }: Props) {
               <DetailRow label="CPU Instructions" value={formatNumber(resources.instructions)} />
               <DetailRow label="Read Bytes" value={formatNumber(resources.readBytes)} />
               <DetailRow label="Write Bytes" value={formatNumber(resources.writeBytes)} />
-              <DetailRow label="Resource Fee" value={`${resources.resourceFeeStroops} stroops`} />
             </>
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  mono,
+  link,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  link?: string;
+}) {
+  return (
+    <div className="flex justify-between gap-4 border-b border-prism-border pb-3">
+      <span className="text-prism-muted text-sm shrink-0">{label}</span>
+      {link ? (
+        <Link href={link} className={`text-prism-accent hover:underline text-sm break-all ${mono ? "font-mono" : ""}`}>
+          {value}
+        </Link>
+      ) : (
+        <span className={`text-sm break-all ${mono ? "font-mono" : ""}`}>{value}</span>
+      )}
     </div>
   );
 }

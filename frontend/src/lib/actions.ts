@@ -10,6 +10,7 @@ import {
 } from "./soroban";
 import type { ContractTypeDef, StorageEntry } from "@/types";
 
+/** Server action: look up one storage entry, returning the entry or an error message. */
 export async function lookupStorageKeyAction(
   contractId: string,
   kind: StorageKeyKind,
@@ -33,6 +34,7 @@ export async function lookupStorageKeyAction(
  */
 const XDR_INPUT_LIMIT = 64 * 1024; // 64 KB of base64
 
+/** Server action: decode a pasted base64 XDR blob, or return an error message. */
 export async function decodeXdrAction(input: string): Promise<XdrDecodeResult | { error: string }> {
   if (!input.trim()) return { error: "Paste some base64 XDR to decode." };
   if (input.length > XDR_INPUT_LIMIT) {
@@ -47,6 +49,7 @@ export async function decodeXdrAction(input: string): Promise<XdrDecodeResult | 
   );
 }
 
+/** Server action: coerce raw argument inputs and simulate a read-only contract call. */
 export async function simulateInvocationAction(
   contractId: string,
   functionName: string,

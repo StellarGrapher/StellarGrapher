@@ -254,6 +254,8 @@ describe("decodeContractCreation (testnet fixtures)", () => {
     expect(decodeContractCreation(createContract.envelope, createContract.meta, "GCREATOR")).toEqual({
       contractId: "CCJKICDXTNUHZBFYYLMGSDAW6FD23DS5UBWYMBC2ECYFSX3EGSSW6G5B",
       creator: "GCREATOR",
+      salt: expect.any(String),
+      wasmHash: expect.any(String),
     });
   });
 
@@ -261,6 +263,8 @@ describe("decodeContractCreation (testnet fixtures)", () => {
     expect(decodeContractCreation(createContractV2.envelope, createContractV2.meta, "GCREATOR")).toEqual({
       contractId: "CBUZIAY2CBUCCRRRJBUANPTOQEF42YETHVG44N34NZ7XIUQ6L7DBV56D",
       creator: "GCREATOR",
+      salt: expect.any(String),
+      wasmHash: expect.any(String),
     });
   });
 

@@ -53,6 +53,10 @@ export interface ContractEvent {
   type: string;
   topic: string[];
   value: string;
+  /** Set only for `contract_created` events. */
+  deployer?: string | null;
+  salt?: string | null;
+  wasmHash?: string | null;
   txHash: string;
   ledger: number;
   timestamp: string;

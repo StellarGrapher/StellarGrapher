@@ -3,13 +3,17 @@ import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
 import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
+import { log } from "./logger.js";
 import {
+  contractCreatedEvent,
   decodeContractCreation,
   decodeInvocation,
   extractEvents,
   extractInvocationReturnValue,
   extractStorageChanges,
 } from "./decode.js";
+import { retryDeadLetterEvent } from "./dead-letter.js";
+import type { DeadLetterStage } from "./dead-letter.js";
 
 // ---------------------------------------------------------------------------
 // Environment variable validation (#20)
@@ -17,7 +21,7 @@ import {
 function requireEnv(name: string, fallback?: string): string {
   const val = process.env[name] ?? fallback;
   if (val === undefined) {
-    console.error(`[indexer] fatal: environment variable ${name} is required but not set`);
+    log.error("environment variable is required but not set", { envVar: name, fatal: true });
     process.exit(1);
   }
   return val;
@@ -28,16 +32,15 @@ function requirePositiveInt(name: string, fallback: number): number {
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
-    console.error(
-      `[indexer] fatal: ${name} must be a positive integer, got "${raw}"`
-    );
+    log.error("environment variable must be a positive integer", { envVar: name, value: raw, fatal: true });
     process.exit(1);
   }
   return n;
 }
 
+
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
-const POLL_INTERVAL_MS = requirePositiveInt("POLL_INTERVAL_MS", 5000);
+const POLL_INTERVAL_MS = requirePositiveInt("INDEXER_POLL_INTERVAL_MS", 6000);
 const HEALTH_PORT = requirePositiveInt("HEALTH_PORT", 8080);
 const MAX_LEDGER_LAG = requirePositiveInt("HEALTH_MAX_LEDGER_LAG", 60);
 const BACKOFF_BASE_MS = 1_000;
@@ -72,6 +75,19 @@ export const metricLag = new Gauge({
 export const metricPollErrors = new Counter({
   name: "indexer_poll_errors_total",
   help: "Total number of poll errors encountered",
+  registers: [metricsRegistry],
+});
+
+export const metricDeadLetterQueueSize = new Gauge({
+  name: "indexer_dead_letter_queue_size",
+  help: "Number of unresolved dead-letter events awaiting retry",
+  registers: [metricsRegistry],
+});
+
+export const metricDeadLetterEvents = new Counter({
+  name: "indexer_dead_letter_events_total",
+  help: "Total dead-letter events recorded, partitioned by stage",
+  labelNames: ["stage"] as const,
   registers: [metricsRegistry],
 });
 
@@ -161,15 +177,13 @@ function startHealthServer(): Server {
     res.writeHead(404).end();
   });
   httpServer.listen(HEALTH_PORT, () => {
-    console.log(
-      `[indexer] health endpoint listening on port ${HEALTH_PORT} (GET /healthz, GET /metrics)`
-    );
+    log.info("health endpoint listening", { port: HEALTH_PORT, routes: ["/healthz", "/metrics"] });
   });
   return httpServer;
 }
 
 function requestShutdown(signal: NodeJS.Signals): void {
-  console.log(`[indexer] ${signal} received, stopping after the current page`);
+  log.info("shutdown signal received, stopping after the current page", { signal });
   stopping = true;
   wakeFromSleep();
 }
@@ -213,8 +227,9 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
     metricRowsWritten.inc({ table: "invocation" }, invocationResult.count);
   }
 
+  let contract: ReturnType<typeof decodeContractCreation> = null;
   if (tx.status === "SUCCESS" && sourceAccount) {
-    const contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
+    contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
     if (contract) {
       const contractResult = await db.contract.createMany({
         data: [
@@ -251,6 +266,7 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
   }
 
   const events = extractEvents(tx.resultMetaXdr, tx.txHash);
+  if (contract) events.push(contractCreatedEvent(contract, tx.txHash));
   if (events.length > 0) {
     const eventsResult = await db.contractEventRecord.createMany({
       skipDuplicates: true,
@@ -260,6 +276,9 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
         type: e.type,
         topic: e.topic,
         value: e.value,
+        deployer: e.deployer ?? null,
+        salt: e.salt ?? null,
+        wasmHash: e.wasmHash ?? null,
         txHash: tx.txHash,
         ledger: tx.ledger,
         createdAt,
@@ -267,6 +286,50 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
     });
     metricRowsWritten.inc({ table: "contractEventRecord" }, eventsResult.count);
   }
+}
+
+/**
+ * Process one transaction, recording it in the dead-letter queue instead of
+ * failing the whole page when it cannot be decoded or persisted.
+ */
+export async function processTransactionSafely(
+  tx: rpc.Api.TransactionInfo,
+  db: Db = prisma
+): Promise<void> {
+  try {
+    await processTransaction(tx, db);
+  } catch (err) {
+    await recordDeadLetterEvent(tx, "persist", errorMessage(err), db);
+  }
+}
+
+/** Persist a failed transaction to the dead-letter queue and bump its metrics. */
+export async function recordDeadLetterEvent(
+  tx: rpc.Api.TransactionInfo,
+  stage: DeadLetterStage,
+  message: string,
+  db: Db = prisma
+): Promise<void> {
+  await db.deadLetterEvent.upsert({
+    where: { txHash_stage: { txHash: tx.txHash, stage } },
+    update: { errorMessage: message, resolvedAt: null },
+    create: {
+      txHash: tx.txHash,
+      ledger: tx.ledger,
+      stage,
+      errorMessage: message,
+      envelopeXdr: tx.envelopeXdr.toXDR("base64"),
+      resultMetaXdr: tx.resultMetaXdr.toXDR("base64"),
+    },
+  });
+  metricDeadLetterEvents.inc({ stage });
+  await refreshDeadLetterQueueSize(db);
+}
+
+/** Re-read the unresolved dead-letter count into the queue-size gauge. */
+export async function refreshDeadLetterQueueSize(db: Db = prisma): Promise<void> {
+  const size = await db.deadLetterEvent.count({ where: { resolvedAt: null } });
+  metricDeadLetterQueueSize.set(size);
 }
 
 function errorMessage(err: unknown): string {
@@ -285,7 +348,7 @@ export interface PageProgress {
 }
 
 /** Fetch one transaction page from the persisted ledger and RPC pagination cursor. Writes nothing. */
-async function fetchPage(
+export async function fetchPage(
   cursor: number,
   paginationCursor: string | null,
   latestLedger: number
@@ -305,10 +368,11 @@ async function fetchPage(
     const oldestMatch = message.match(/oldest ledger:\s*(\d+)/i);
     const latestMatch = message.match(/latest ledger:\s*(\d+)/i);
     if (oldestMatch && Number(oldestMatch[1]) > cursor + 1) {
-      console.warn(
-        `[indexer] ledger ${cursor + 1} is before the RPC node's retention window (oldest: ${oldestMatch[1]}) — ` +
-          `skipping ahead to ${latestLedger}. Some history in the gap was missed.`
-      );
+      log.warn("ledger is before the RPC node's retention window, skipping ahead; history in the gap was missed", {
+        requestedLedger: cursor + 1,
+        oldestAvailable: Number(oldestMatch[1]),
+        skippingTo: latestLedger,
+      });
       return {
         transactions: [],
         progress: {
@@ -366,13 +430,14 @@ export async function commitPage(
   );
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const network = await server.getHealth();
   const existing = await findCursor();
   if (existing && process.env.INDEXER_START_LEDGER) {
-    console.warn(
-      `[indexer] INDEXER_START_LEDGER is ignored: the cursor already exists at ledger ${existing.lastLedger}`
-    );
+    log.warn("INDEXER_START_LEDGER is ignored because the cursor already exists", {
+      cursorLedger: existing.lastLedger,
+      requested: process.env.INDEXER_START_LEDGER,
+    });
   }
   const initialCursor =
     existing ?? (await seedCursor(seedLastLedger(process.env.INDEXER_START_LEDGER, network)));
@@ -380,7 +445,7 @@ async function main(): Promise<void> {
   let paginationCursor = initialCursor.paginationCursor;
   health.cursor = cursor;
   health.latestLedger = network.latestLedger;
-  console.log(`[indexer] starting at ledger ${cursor} (network is at ${network.latestLedger})`);
+  log.info("starting", { cursor, latestLedger: network.latestLedger });
 
   const healthServer = startHealthServer();
   process.once("SIGTERM", requestShutdown);
@@ -407,7 +472,7 @@ async function main(): Promise<void> {
           cursor = progress.lastLedger;
           paginationCursor = progress.paginationCursor;
           health.cursor = cursor;
-          console.log(`[indexer] processed through ledger ${cursor}`);
+          log.info("processed through ledger", { cursor });
         }
         caughtUp = cursor >= latestNow.sequence && !paginationCursor;
         if (page.transactions.length > 0) {
@@ -423,15 +488,12 @@ async function main(): Promise<void> {
       health.lastPollFailed = true;
       metricPollErrors.inc();
       delayMs = backoffDelay(consecutiveFailures);
-      console.error(
-        `[indexer] poll error (failure ${consecutiveFailures}), retrying in ${delayMs}ms:`,
-        err
-      );
+      log.error("poll failed, retrying", { consecutiveFailures, retryInMs: delayMs, err });
     }
     if (!stopping) await sleep(delayMs);
   }
 
-  console.log("[indexer] shutting down");
+  log.info("shutting down", { cursor });
   await setCursor(cursor, paginationCursor);
   healthServer.close();
   await prisma.$disconnect();
@@ -440,7 +502,7 @@ async function main(): Promise<void> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch(async (err) => {
-    console.error("[indexer] fatal error:", err);
+    log.error("fatal error", { err });
     await prisma.$disconnect();
     process.exit(1);
   });

@@ -1,36 +1,12 @@
-# Local development stack for running Prism against a stellar-quickstart network.
-#
-# Usage:
-#   docker compose up -d
-#
-# This starts a local Stellar network (stellar/quickstart) exposing the
-# Horizon and Soroban RPC endpoints that Prism can be pointed at.
-#
-# Endpoints once healthy:
-#   Horizon:      http://localhost:8000
-#   Soroban RPC:  http://localhost:8000/soroban/rpc
-#   Friendbot:    http://localhost:8000/friendbot
-#   Network passphrase: "Standalone Network ; February 2017"
-#
-# Point Prism at the local network by setting (e.g. in .env.local):
-#   NEXT_PUBLIC_STELLAR_NETWORK=standalone
-#   NEXT_PUBLIC_HORIZON_URL=http://localhost:8000
-#   NEXT_PUBLIC_SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc
-#   NEXT_PUBLIC_NETWORK_PASSPHRASE="Standalone Network ; February 2017"
-#
-# Deploy the showcase contract to this network with the Stellar CLI:
-#   stellar contract deploy \
-#     --wasm target/wasm32-unknown-unknown/release/showcase.wasm \
-#     --source alice \
-#     --network standalone \
-#     --rpc-url http://localhost:8000/soroban/rpc \
-#     --network-passphrase "Standalone Network ; February 2017"
-
+# Optional local Stellar network:
+#   docker compose --profile local-network up -d stellar-quickstart
 services:
   stellar-quickstart:
     image: stellar/quickstart:latest
     container_name: prism-stellar-quickstart
     command: --local
+    profiles:
+      - local-network
     ports:
       - "8000:8000"
     healthcheck:
@@ -39,3 +15,63 @@ services:
       timeout: 5s
       retries: 30
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: prism
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prism}
+      POSTGRES_DB: prism
+    volumes:
+      - prism-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prism"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  indexer:
+    build: ./indexer
+    environment:
+      DATABASE_URL: postgresql://prism:${POSTGRES_PASSWORD:-prism}@postgres:5432/prism
+      SOROBAN_RPC_URL: ${NEXT_PUBLIC_SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+      INDEXER_POLL_INTERVAL_MS: "6000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then((r) => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_NETWORK: ${NEXT_PUBLIC_NETWORK:-testnet}
+      NEXT_PUBLIC_HORIZON_URL: ${NEXT_PUBLIC_HORIZON_URL:-https://horizon-testnet.stellar.org}
+      NEXT_PUBLIC_SOROBAN_RPC_URL: ${NEXT_PUBLIC_SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://prism:${POSTGRES_PASSWORD:-prism}@postgres:5432/prism}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      DATABASE_IDLE_TIMEOUT_MS: ${DATABASE_IDLE_TIMEOUT_MS:-10000}
+      DATABASE_SSL: ${DATABASE_SSL:-false}
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  prism-postgres-data:

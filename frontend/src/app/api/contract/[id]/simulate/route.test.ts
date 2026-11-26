@@ -6,6 +6,8 @@
  *   - fetches types from the WASM (via getContractWasmInfo) when none are
  *     supplied by the caller
  *   - still works when no types are available at all (primitive-only args)
+ *   - enforces the XDR input size limit (#125): accepts exactly-at-limit input
+ *     and returns 413 for over-limit input
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -114,5 +116,51 @@ describe("POST /api/contract/[id]/simulate — type definitions (#30)", () => {
     const json = await res.json();
     expect(json.success).toBe(true);
     expect(json.returnValue).toBe("42");
+  });
+});
+
+describe("POST /api/contract/[id]/simulate — XDR input size limit (#125)", () => {
+  const DEFAULT_LIMIT = 1024 * 1024; // 1 MB
+
+  function makeRawRequest(body: string): Request {
+    return new Request(`http://localhost/api/contract/${CONTRACT_ID}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  }
+
+  /**
+   * Build a JSON body whose serialized length is exactly `targetBytes`.
+   * The `xdr` field is padded with a base64-ish string to reach the target.
+   */
+  function makeBodyOfSize(targetBytes: number): string {
+    const base = JSON.stringify({ functionName: "hello", xdr: "" });
+    const padding = targetBytes - base.length;
+    if (padding < 0) throw new Error("target too small");
+    return JSON.stringify({ functionName: "hello", xdr: "A".repeat(padding) });
+  }
+
+  it("accepts input exactly at the configured limit", async () => {
+    vi.mocked(getContractWasmInfo).mockResolvedValue(null);
+    vi.mocked(simulateInvocation).mockResolvedValue({ success: true });
+
+    const body = makeBodyOfSize(DEFAULT_LIMIT);
+    expect(body.length).toBe(DEFAULT_LIMIT);
+
+    const res = await POST(makeRawRequest(body), params);
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 413 when input exceeds the configured limit", async () => {
+    const body = makeBodyOfSize(DEFAULT_LIMIT + 1);
+    expect(body.length).toBe(DEFAULT_LIMIT + 1);
+
+    const res = await POST(makeRawRequest(body), params);
+    expect(res.status).toBe(413);
+    const json = await res.json();
+    expect(json.error).toMatch(/too large|limit|size/i);
+    // The oversized payload must be rejected before any simulation work.
+    expect(simulateInvocation).not.toHaveBeenCalled();
   });
 });

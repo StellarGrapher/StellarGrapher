@@ -23,6 +23,7 @@ export interface HistoryPage<T> {
   nextCursor: string | null;
 }
 
+/** Encode a cursor as an opaque base64url token safe to put in a URL query parameter. */
 export function encodeCursor(cursor: HistoryCursor): string {
   return Buffer.from(JSON.stringify([cursor.ledger, cursor.id])).toString("base64url");
 }

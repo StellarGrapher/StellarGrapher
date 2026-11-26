@@ -39,7 +39,7 @@ docker compose up
 | -------------------- | ------------------------------------ | ------------------------------------ |
 | `DATABASE_URL`       | *(required)*                         | PostgreSQL connection string         |
 | `SOROBAN_RPC_URL`    | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint to poll        |
-| `POLL_INTERVAL_MS`   | `5000`                               | Milliseconds between poll cycles     |
+| `INDEXER_POLL_INTERVAL_MS` | `6000`                         | Milliseconds between poll cycles; must be a positive integer |
 | `HEALTH_PORT`        | `8080`                               | Port for the `GET /healthz` endpoint |
 | `HEALTH_MAX_LEDGER_LAG` | `60`                              | Ledgers behind the network before `/healthz` returns 503 |
 | `INDEXER_START_LEDGER` | *(latest ledger)*                  | First ledger to index on a fresh database; must be inside the RPC node's retention window. Ignored once a cursor exists |
@@ -55,7 +55,126 @@ docker compose up
 
 The live cursor is a single row (`id = 1`) tracking the last processed ledger and RPC page position. Live indexing remains forward-only; use the backfill command to load historical ranges. Backfill progress is tracked independently in `BackfillCursor`, allowing it to coexist with the live cursor.
 
+## Event processing flow
+
+Each poll cycle is **poll → decode → persist → notify**. The happy path and the
+two error paths (RPC failure and retention gap) are shown below.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant I as Indexer
+    participant R as Soroban RPC
+    participant DB as Postgres (Prisma)
+    participant H as Health server
+
+    loop every poll (POLL_INTERVAL_MS, or immediately when behind)
+        I->>R: getLatestLedger()
+        R-->>I: latest ledger
+        I->>R: getTransactions(startLedger=cursor+1, limit=50)
+        R-->>I: page of transactions
+
+        Note over I: decode each tx: invocations,<br/>deployments, storage changes, events
+        I->>DB: BEGIN
+        DB->>DB: createMany(...) with skipDuplicates
+        I->>DB: setCursor(lastLedger, paginationCursor)
+        I->>DB: COMMIT
+        I->>H: update snapshot (cursor, latestLedger, lag)
+    end
+
+    Note over I,R: Error path — RPC unreachable or 429
+    I->>R: getTransactions(...)
+    R--xI: error / timeout
+    Note over I: lastPollFailed=true, no cursor advance,<br/>backoffDelay(failures) then retry
+
+    Note over I,R: Error path — ledger before retention window
+    I->>R: getTransactions(startLedger=cursor+1)
+    R--xI: "oldest ledger: N" (N > cursor+1)
+    Note over I,DB: record IndexerGap, jump cursor to latest
+    I->>DB: COMMIT (gap + cursor)
+```
+
+A crash before the cursor advances is safe: the same page is reprocessed and
+`skipDuplicates` prevents double-inserts. The health server returns `503` while
+`lastPollFailed` is true or the lag exceeds `HEALTH_MAX_LEDGER_LAG`.
+
 ## Tables
+
+The entity-relationship diagram below is generated from
+`prisma/schema.prisma` (see [ADR 0002](../adr/0002-forward-only-indexer.md) for
+why the live tables are forward-only). The relationships are **logical** — they
+are expressed by the `contractId` column, not by database foreign keys.
+
+```mermaid
+erDiagram
+    Contract ||--o{ Invocation : "contractId"
+    Contract ||--o{ StorageChange : "contractId"
+    Contract ||--o{ ContractEventRecord : "contractId"
+
+    IndexerCursor {
+        int id PK
+        int lastLedger
+        string paginationCursor
+        datetime updatedAt
+    }
+    BackfillCursor {
+        int id PK
+        int fromLedger
+        int toLedger
+        int lastLedger
+        string paginationCursor
+        boolean completed
+        datetime updatedAt
+    }
+    IndexerGap {
+        string id PK
+        int fromLedger
+        int toLedger
+        string reason
+        datetime createdAt
+    }
+    Contract {
+        string contractId PK
+        string creator
+        int deploymentLedger
+        string deploymentTxHash UK
+        datetime createdAt
+    }
+    Invocation {
+        string id PK
+        string txHash UK
+        int ledger
+        datetime createdAt
+        string contractId
+        string functionName
+        json args
+        boolean successful
+        string sourceAccount
+        string returnValue
+    }
+    StorageChange {
+        string id PK
+        string contractId
+        string durability
+        string keyDisplay
+        string valueDisplay
+        string changeType
+        int ledger
+        string txHash
+        datetime createdAt
+    }
+    ContractEventRecord {
+        string id PK
+        string eventId UK
+        string contractId
+        string type
+        json topic
+        string value
+        string txHash
+        int ledger
+        datetime createdAt
+    }
+```
 
 ### `indexer_cursor`
 Singleton row (id always 1) tracking how far the indexer has processed.
@@ -154,4 +273,15 @@ cd indexer
 npm test
 ```
 
-Tests cover the XDR decoder (`decode.test.ts`) — the most correctness-critical component, which turns raw transaction envelopes into typed invocation/storage/event records.
+Tests cover the XDR decoder (`decode.test.ts`) — the most correctness-critical component, which turns raw transaction envelopes into typed invocation/storage/event records — and the indexer's page/cursor logic (`index.test.ts`).
+
+### Postgres round-trip integration test
+
+`src/integration.test.ts` runs the indexer's real poll loop (`main()`) against a mock Soroban RPC server, writes the decoded rows to a real PostgreSQL instance, and reads them back through Prisma to verify event count, fields and ordering. It is skipped unless `TEST_DATABASE_URL` points at a disposable database:
+
+```bash
+docker compose up -d postgres
+TEST_DATABASE_URL="postgresql://prism:prism@localhost:5432/prism_test" npm test
+```
+
+The test applies the Prisma migrations to that database, truncates the indexer tables, and leaves the schema in place. CI runs it against a `postgres:16` service container.

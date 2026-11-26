@@ -187,4 +187,44 @@ explorer.example.com {
 
 With more than one proxy, such as a CDN or load balancer in front of nginx, the outermost hop has to set the header and every inner hop has to pass it on without appending. With nginx, use `real_ip_header X-Forwarded-For` and `set_real_ip_from <upstream range>` so that `$remote_addr` becomes the original client, then set the header to it as shown above. Cloudflare provides the client address in `CF-Connecting-IP`. Behind Cloudflare, use `proxy_set_header X-Forwarded-For $http_cf_connecting_ip;`, but only if Prism's origin accepts traffic from Cloudflare alone.
 
-To check the setup, send about 35 requests in a minute to a read route from one machine, for example `curl -s -o /dev/null -w '%{http_code}\n' https://explorer.example.com/api/ledger/1`. From around the 31st request you should get `429`. A second machine should still get `200` during that time. If the second machine also gets `429`, every client is sharing one counter: the header isn't reaching Prism, or the proxy is appending instead of replacing.
+To check the setup, send about 35 requests in a minute to a read route from one machine, for example `curl -s -o /dev/null -w '%{http_code}\n' https://explorer.example.com/api/ledger/1`. From around the 31st request you should get `429`. A second machine should still get `200` during that time. If the second machine also gets `429`, every client is sharing one counter: the header isn't reaching Prism, or it holds the proxy's own address.
+
+---
+
+## Roadmap
+
+- [x] Ledger overview with auto-refreshing updates
+- [x] Transaction explorer with Soroban decoding
+- [x] Contract storage inspector
+- [x] Contract invocation history and event log
+- [x] In-browser contract invocation tool
+- [x] XDR decoder
+- [x] Docker Compose for self-hosting
+- [x] Optional indexer for full storage enumeration and unbounded history
+- [x] Showcase contract for end-to-end verification of every explorer panel
+- [ ] Mainnet deployment at prism.network
+
+---
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get started. Frontend, RPC integration, indexer, and Soroban contract contributions are all needed.
+
+New contributors can follow the [first-PR walkthrough](./docs/onboarding.md).
+
+## Documentation
+
+| Document | What it covers |
+| --- | --- |
+| [docs/onboarding.md](./docs/onboarding.md) | First pull request walkthrough (frontend, indexer, contracts). |
+| [docs/api-reference.md](./docs/api-reference.md) | The JSON API and its rate-limiting/back-off model. |
+| [docs/troubleshooting.md](./docs/troubleshooting.md) | Common self-hosting issues and fixes. |
+| [ENVIRONMENT.md](./ENVIRONMENT.md) | Every environment variable, with defaults. |
+| [GLOSSARY.md](./GLOSSARY.md) | Soroban and Stellar terms in plain language. |
+| [adr/](./adr/README.md) | Architecture decision records. |
+| [indexer/README.md](./indexer/README.md) | Indexer flow diagram and database schema. |
+| [contracts/README.md](./contracts/README.md) | Showcase contract function reference. |
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
