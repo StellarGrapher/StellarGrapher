@@ -4,6 +4,7 @@ import { nativeToScVal, rpc, StrKey } from "@stellar/stellar-sdk";
 vi.mock("./indexed-db", () => ({
   isIndexerConfigured: vi.fn(),
   getIndexedEvents: vi.fn(),
+  searchIndexedEvents: vi.fn(),
   getIndexedContract: vi.fn().mockResolvedValue(null),
   getIndexedInvocationReturnValue: vi.fn().mockResolvedValue(null),
   getIndexedInvocations: vi.fn(),
@@ -21,6 +22,7 @@ import {
 import {
   getIndexedContract,
   getIndexedEvents,
+  searchIndexedEvents,
   getIndexedInvocationReturnValue,
   getIndexedInvocations,
   isIndexerConfigured,

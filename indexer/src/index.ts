@@ -1,5 +1,5 @@
 import { rpc, encodeMuxedAccountToAddress, type xdr } from "@stellar/stellar-sdk";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
 import type { Prisma } from "@prisma/client";
@@ -9,11 +9,12 @@ import {
   contractCreatedEvent,
   decodeContractCreation,
   decodeInvocation,
+  decodeTokenEvent,
   extractEvents,
   extractInvocationReturnValue,
   extractStorageChanges,
+  type DecodedTokenEvent,
 } from "./decode.js";
-import { retryDeadLetterEvent } from "./dead-letter.js";
 import type { DeadLetterStage } from "./dead-letter.js";
 
 // ---------------------------------------------------------------------------
@@ -188,9 +189,190 @@ export function seedLastLedger(
 
 const health: HealthSnapshot = { cursor: 0, latestLedger: 0, lastPollFailed: false };
 
+// ---------------------------------------------------------------------------
+// Admin re-indexing (#76)
+// ---------------------------------------------------------------------------
+export interface ReindexRequest {
+  fromLedger: number;
+  toLedger: number;
+  contractId?: string;
+}
+
+/** Parse and validate a POST /admin/reindex body. Throws with a client-facing message. */
+export function parseReindexRequest(body: unknown): ReindexRequest {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new Error("body must be a JSON object");
+  }
+  const { fromLedger, toLedger, contractId } = body as Record<string, unknown>;
+  if (!Number.isSafeInteger(fromLedger) || (fromLedger as number) < 1) {
+    throw new Error("fromLedger must be a positive integer");
+  }
+  if (!Number.isSafeInteger(toLedger) || (toLedger as number) < (fromLedger as number)) {
+    throw new Error("toLedger must be an integer greater than or equal to fromLedger");
+  }
+  if (contractId !== undefined && (typeof contractId !== "string" || contractId.trim() === "")) {
+    throw new Error("contractId must be a non-empty string when provided");
+  }
+  if (typeof contractId === "string" && !/^C[A-Z2-7]{55}$/.test(contractId.trim())) {
+    throw new Error("contractId must be a valid Stellar contract ID");
+  }
+  return {
+    fromLedger: fromLedger as number,
+    toLedger: toLedger as number,
+    ...(contractId === undefined ? {} : { contractId: (contractId as string).trim() }),
+  };
+}
+
+/** Constant-time-ish comparison of the bearer token against ADMIN_TOKEN. */
+export function isAuthorizedAdmin(header: string | undefined, token: string | undefined): boolean {
+  if (!token) return false;
+  const expected = `Bearer ${token}`;
+  if (header === undefined || header.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i += 1) diff |= header.charCodeAt(i) ^ expected.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Only one re-index runs at a time; a second request is rejected with 409. */
+let reindexRunning = false;
+
+/**
+ * Re-index a ledger range (optionally narrowed to one contract) without touching
+ * the live cursor. Rows are re-inserted with `skipDuplicates`, so replaying a
+ * range is idempotent and never blocks or rewinds live indexing.
+ */
+export async function reindexRange(
+  request: ReindexRequest,
+  db: Db = prisma
+): Promise<{ ledgers: number; transactions: number }> {
+  const { fromLedger, toLedger, contractId } = request;
+  let paginationCursor: string | null = null;
+  let startLedger = fromLedger;
+  let ledgers = 0;
+  let transactions = 0;
+
+  while (true) {
+    const response = paginationCursor
+      ? await server.getTransactions({ pagination: { limit: PAGE_LIMIT, cursor: paginationCursor } })
+      : await server.getTransactions({ startLedger, pagination: { limit: PAGE_LIMIT } });
+
+    let reachedEnd = false;
+    let lastLedger = startLedger - 1;
+    for (const tx of response.transactions) {
+      if (tx.ledger > toLedger) {
+        reachedEnd = true;
+        break;
+      }
+      if (tx.ledger < fromLedger) continue;
+      if (tx.ledger !== lastLedger) {
+        ledgers += 1;
+        lastLedger = tx.ledger;
+        log.info("re-indexing ledger", {
+          component: "reindex",
+          ledger: tx.ledger,
+          fromLedger,
+          toLedger,
+        });
+      }
+      if (contractId !== undefined && !transactionTouchesContract(tx, contractId)) continue;
+      await processTransaction(tx, db);
+      transactions += 1;
+    }
+
+    if (reachedEnd) break;
+    if (response.transactions.length === PAGE_LIMIT) {
+      if (!response.cursor || response.cursor === paginationCursor) {
+        throw new Error("RPC returned a full page without advancing its transaction cursor");
+      }
+      paginationCursor = response.cursor;
+      continue;
+    }
+    if (response.latestLedger < toLedger) {
+      throw new Error(
+        `RPC history currently reaches ledger ${response.latestLedger}, before requested ledger ${toLedger}`
+      );
+    }
+    break;
+  }
+
+  log.info("completed ledger range", {
+    component: "reindex",
+    fromLedger,
+    toLedger,
+    contractId,
+    transactions,
+  });
+  return { ledgers, transactions };
+}
+
+/** True when the transaction invokes, creates, or emits events for `contractId`. */
+function transactionTouchesContract(tx: rpc.Api.TransactionInfo, contractId: string): boolean {
+  const invocation = decodeInvocation(tx.envelopeXdr);
+  if (invocation?.contractId === contractId) return true;
+  const sourceAccount = sourceAccountOf(tx.envelopeXdr);
+  if (tx.status === "SUCCESS" && sourceAccount) {
+    const creation = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
+    if (creation?.contractId === contractId) return true;
+  }
+  if (extractStorageChanges(tx.resultMetaXdr).some((c) => c.contractId === contractId)) return true;
+  return extractEvents(tx.resultMetaXdr, tx.txHash).some((e) => e.contractId === contractId);
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > 64 * 1024) throw new Error("request body too large");
+    chunks.push(chunk as Buffer);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (raw.trim() === "") return {};
+  return JSON.parse(raw);
+}
+
+async function handleReindexRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const send = (status: number, payload: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(payload));
+  };
+
+  if (!isAuthorizedAdmin(req.headers.authorization, process.env.ADMIN_TOKEN)) {
+    send(401, { error: "unauthorized" });
+    return;
+  }
+  if (reindexRunning) {
+    send(409, { error: "a re-index is already running" });
+    return;
+  }
+
+  let request: ReindexRequest;
+  try {
+    request = parseReindexRequest(await readJsonBody(req));
+  } catch (err) {
+    send(400, { error: errorMessage(err) });
+    return;
+  }
+
+  reindexRunning = true;
+  try {
+    const result = await reindexRange(request);
+    send(200, { ok: true, ...request, ...result });
+  } catch (err) {
+    log.error("admin re-index failed", { component: "reindex", err });
+    send(500, { error: errorMessage(err) });
+  } finally {
+    reindexRunning = false;
+  }
+}
+
 function startHealthServer(): Server {
   const httpServer = createServer(async (req, res) => {
     const path = req.url?.split("?")[0];
+    if (req.method === "POST" && path === "/admin/reindex") {
+      await handleReindexRequest(req, res);
+      return;
+    }
     if (req.method !== "GET") {
       res.writeHead(405).end();
       return;
@@ -210,7 +392,10 @@ function startHealthServer(): Server {
     res.writeHead(404).end();
   });
   httpServer.listen(HEALTH_PORT, () => {
-    log.info("health endpoint listening", { port: HEALTH_PORT, routes: ["/healthz", "/metrics"] });
+    log.info("health endpoint listening", {
+      port: HEALTH_PORT,
+      routes: ["/healthz", "/metrics", "/admin/reindex"],
+    });
   });
   return httpServer;
 }
@@ -239,6 +424,7 @@ export interface TransactionRows {
   contracts: Prisma.ContractCreateManyInput[];
   storageChanges: Prisma.StorageChangeCreateManyInput[];
   events: Prisma.ContractEventRecordCreateManyInput[];
+  tokenEvents: Prisma.TokenEventCreateManyInput[];
 }
 
 /** Decode a transaction into the rows it would insert. Writes nothing. */
@@ -320,8 +506,23 @@ export function transactionRows(
     ledger: tx.ledger,
     createdAt,
   }));
+  const tokenEvents: Prisma.TokenEventCreateManyInput[] = extractedEvents
+    .map((event) => decodeTokenEvent(event, tx.txHash, tx.ledger))
+    .filter((event): event is DecodedTokenEvent => event !== null)
+    .map((event) => ({
+      eventId: event.eventId,
+      tokenContractId: event.tokenContractId,
+      eventType: event.eventType,
+      from: event.from,
+      to: event.to,
+      spender: event.spender,
+      amount: event.amount,
+      txHash: event.txHash,
+      ledger: event.ledger,
+      createdAt,
+    }));
 
-  return { invocations, contracts, storageChanges, events };
+  return { invocations, contracts, storageChanges, events, tokenEvents };
 }
 
 /**
@@ -340,6 +541,7 @@ export async function insertTransactions(
     contracts: [],
     storageChanges: [],
     events: [],
+    tokenEvents: [],
   };
   for (const tx of transactions) {
     const txRows = transactionRows(tx, contractFilter);
@@ -347,6 +549,7 @@ export async function insertTransactions(
     rows.contracts.push(...txRows.contracts);
     rows.storageChanges.push(...txRows.storageChanges);
     rows.events.push(...txRows.events);
+    rows.tokenEvents.push(...txRows.tokenEvents);
   }
 
   if (rows.invocations.length > 0) {
@@ -370,6 +573,13 @@ export async function insertTransactions(
       skipDuplicates: true,
     });
     metricRowsWritten.inc({ table: "contractEventRecord" }, result.count);
+  }
+  if (rows.tokenEvents.length > 0) {
+    const result = await db.tokenEvent.createMany({
+      data: rows.tokenEvents,
+      skipDuplicates: true,
+    });
+    metricRowsWritten.inc({ table: "tokenEvent" }, result.count);
   }
 }
 
