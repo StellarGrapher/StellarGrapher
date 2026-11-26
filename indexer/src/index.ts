@@ -38,6 +38,29 @@ function requirePositiveInt(name: string, fallback: number): number {
   return n;
 }
 
+/**
+ * Parse INDEXER_CONTRACT_IDS: comma-separated contract IDs. Empty or unset means
+ * index every contract. Returns null for "no filter".
+ */
+export function parseContractIds(raw: string | undefined): Set<string> | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  const ids = raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id !== "");
+  if (ids.length === 0) return null;
+  for (const id of ids) {
+    if (!/^C[A-Z2-7]{55}$/.test(id)) {
+      log.error("INDEXER_CONTRACT_IDS contains an invalid contract ID", {
+        envVar: "INDEXER_CONTRACT_IDS",
+        value: id,
+        fatal: true,
+      });
+      process.exit(1);
+    }
+  }
+  return new Set(ids);
+}
 
 const RPC_URL = requireEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
 const POLL_INTERVAL_MS = requirePositiveInt("INDEXER_POLL_INTERVAL_MS", 6000);
@@ -45,7 +68,16 @@ const HEALTH_PORT = requirePositiveInt("HEALTH_PORT", 8080);
 const MAX_LEDGER_LAG = requirePositiveInt("HEALTH_MAX_LEDGER_LAG", 60);
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_MAX_MS = 60_000;
+export const CONTRACT_IDS = parseContractIds(process.env.INDEXER_CONTRACT_IDS);
 export const PAGE_LIMIT = 50;
+
+/** True when the contract passes the optional INDEXER_CONTRACT_IDS filter. */
+export function isIndexedContract(
+  contractId: string,
+  filter: Set<string> | null = CONTRACT_IDS
+): boolean {
+  return filter === null || filter.has(contractId);
+}
 
 // ---------------------------------------------------------------------------
 // Prometheus metrics (#23)
@@ -200,12 +232,16 @@ function sourceAccountOf(envelope: xdr.TransactionEnvelope): string {
   }
 }
 
-export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = prisma): Promise<void> {
+export async function processTransaction(
+  tx: rpc.Api.TransactionInfo,
+  db: Db = prisma,
+  contractFilter: Set<string> | null = CONTRACT_IDS
+): Promise<void> {
   const createdAt = new Date(tx.createdAt * 1000);
   const invocation = decodeInvocation(tx.envelopeXdr);
   const sourceAccount = sourceAccountOf(tx.envelopeXdr);
 
-  if (invocation) {
+  if (invocation && isIndexedContract(invocation.contractId, contractFilter)) {
     // skipDuplicates makes reprocessing a page after a crash-before-cursor-advance safe.
     const invocationResult = await db.invocation.createMany({
       data: [
@@ -230,7 +266,7 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
   let contract: ReturnType<typeof decodeContractCreation> = null;
   if (tx.status === "SUCCESS" && sourceAccount) {
     contract = decodeContractCreation(tx.envelopeXdr, tx.resultMetaXdr, sourceAccount);
-    if (contract) {
+    if (contract && isIndexedContract(contract.contractId, contractFilter)) {
       const contractResult = await db.contract.createMany({
         data: [
           {
@@ -251,16 +287,18 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
   if (changes.length > 0) {
     const storageResult = await db.storageChange.createMany({
       skipDuplicates: true,
-      data: changes.map((c) => ({
-        contractId: c.contractId,
-        durability: c.durability,
-        keyDisplay: c.keyDisplay,
-        valueDisplay: c.valueDisplay,
-        changeType: c.changeType,
-        ledger: tx.ledger,
-        txHash: tx.txHash,
-        createdAt,
-      })),
+      data: changes
+        .filter((c) => isIndexedContract(c.contractId, contractFilter))
+        .map((c) => ({
+          contractId: c.contractId,
+          durability: c.durability,
+          keyDisplay: c.keyDisplay,
+          valueDisplay: c.valueDisplay,
+          changeType: c.changeType,
+          ledger: tx.ledger,
+          txHash: tx.txHash,
+          createdAt,
+        })),
     });
     metricRowsWritten.inc({ table: "storageChange" }, storageResult.count);
   }
@@ -270,19 +308,21 @@ export async function processTransaction(tx: rpc.Api.TransactionInfo, db: Db = p
   if (events.length > 0) {
     const eventsResult = await db.contractEventRecord.createMany({
       skipDuplicates: true,
-      data: events.map((e) => ({
-        eventId: e.eventId,
-        contractId: e.contractId,
-        type: e.type,
-        topic: e.topic,
-        value: e.value,
-        deployer: e.deployer ?? null,
-        salt: e.salt ?? null,
-        wasmHash: e.wasmHash ?? null,
-        txHash: tx.txHash,
-        ledger: tx.ledger,
-        createdAt,
-      })),
+      data: events
+        .filter((e) => isIndexedContract(e.contractId, contractFilter))
+        .map((e) => ({
+          eventId: e.eventId,
+          contractId: e.contractId,
+          type: e.type,
+          topic: e.topic,
+          value: e.value,
+          deployer: e.deployer ?? null,
+          salt: e.salt ?? null,
+          wasmHash: e.wasmHash ?? null,
+          txHash: tx.txHash,
+          ledger: tx.ledger,
+          createdAt,
+        })),
     });
     metricRowsWritten.inc({ table: "contractEventRecord" }, eventsResult.count);
   }
@@ -446,6 +486,11 @@ export async function main(): Promise<void> {
   health.cursor = cursor;
   health.latestLedger = network.latestLedger;
   log.info("starting", { cursor, latestLedger: network.latestLedger });
+  if (CONTRACT_IDS === null) {
+    log.info("indexing all contracts");
+  } else {
+    log.info("indexing filtered contracts", { contractCount: CONTRACT_IDS.size });
+  }
 
   const healthServer = startHealthServer();
   process.once("SIGTERM", requestShutdown);
