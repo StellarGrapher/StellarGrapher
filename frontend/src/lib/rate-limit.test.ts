@@ -152,3 +152,35 @@ describe("rateLimitRequest (#27)", () => {
     expect(result?.status).toBe(429);
   });
 });
+
+// ── Issue #104: concurrent request test ──────────────────────────────────────
+
+describe("rateLimit under concurrent pressure (issue #104)", () => {
+  it("rejects requests beyond the limit when 35 fire simultaneously (limit 30)", async () => {
+    const LIMIT = 30;
+    const TOTAL = 35;
+    const scope = `concurrent-ci-${Date.now()}`;
+
+    // Promise.all fires all requests in the same microtask queue turn — the
+    // rateLimit counter is synchronous so the order is deterministic.
+    const results = await Promise.all(
+      Array.from({ length: TOTAL }, () => {
+        return Promise.resolve(rateLimit(scope, LIMIT, 60_000));
+      })
+    );
+
+    const passed = results.filter((r) => r.success).length;
+    const rejected = results.filter((r) => !r.success).length;
+
+    // Exactly LIMIT requests should pass; the rest must be rejected.
+    expect(passed).toBe(LIMIT);
+    expect(rejected).toBe(TOTAL - LIMIT);
+
+    // Every rejected result must carry a retryAfter value and remaining of 0.
+    for (const r of results.filter((r) => !r.success)) {
+      expect(r.remaining).toBe(0);
+      expect(typeof r.retryAfter).toBe("number");
+      expect(r.retryAfter).toBeGreaterThan(0);
+    }
+  });
+});
