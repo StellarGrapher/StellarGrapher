@@ -15,6 +15,7 @@ Thank you for helping build better Stellar tooling!
 - Indexer improvements in `indexer/src/`
 - UI components and design
 - RPC integration and data parsing
+- Soroban smart contracts in `contracts/`
 - Tests and documentation
 
 ## Project Structure
@@ -88,6 +89,44 @@ cd contracts
 cargo build         # Build contracts
 cargo test          # Run contract tests
 ```
+
+## Rust / Soroban Contract Contributions
+
+The contracts in `contracts/` are Rust smart contracts targeting Soroban.
+The pinned toolchain in `contracts/rust-toolchain.toml` provides the Wasm
+target and Rust tooling used by CI.
+
+Run these commands from `contracts/`:
+
+```bash
+cargo build --workspace
+cargo build --workspace --target wasm32v1-none --release
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Before opening a PR, ensure formatting and clippy pass and all contract tests
+are green.
+
+### Adding a New Contract
+
+1. Create a crate under `contracts/` and add it to the workspace `members` in
+   `contracts/Cargo.toml`.
+2. Set `crate-type = ["cdylib", "rlib"]` and use the workspace
+   `soroban-sdk` dependency.
+3. Implement the contract with `#[contract]` and `#[contractimpl]`, and add
+   tests using `soroban_sdk::Env`.
+4. Commit any generated test snapshots with the contract changes.
+5. Update the frontend or indexer types and documentation if they consume the
+   contract's storage or events.
+
+### Soroban / Stellar Documentation
+
+- [Soroban smart contracts](https://developers.stellar.org/docs/smart-contracts)
+- [Soroban Rust SDK](https://docs.rs/soroban-sdk)
+- [Stellar developer docs](https://developers.stellar.org/docs)
+- [Stellar SDKs](https://developers.stellar.org/docs/tools/sdks)
 
 ## Indexer Database Schema
 
@@ -298,6 +337,9 @@ Run the linter before submitting:
 ```bash
 cd frontend && npm run lint
 ```
+
+For Rust contracts, run `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` from `contracts/`.
 
 ## Changelog
 

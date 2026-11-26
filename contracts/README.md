@@ -91,7 +91,7 @@ in the topic list. `AmountsTallied` uses `vec` (positional) data and
 | `AmountsTallied` | *(none)* | `[count: u32, total: i128]` (vec) | `tally` |
 | `CounterValue` | *(none)* | `counter: u32` (single-value) | `bump` |
 
-## Local development
+## Contributing to the contracts
 
 Run commands from the repository root. Each command below includes a typical
 successful result; timing and compiler progress can differ by machine.
@@ -148,8 +148,24 @@ Example output:
 ```
 
 The pinned Rust toolchain installs `wasm32v1-none`, rustfmt, and clippy. Tests
-also write ledger snapshots to `showcase/test_snapshots/`; those snapshots are
+also write ledger snapshots to `<crate>/test_snapshots/`; those snapshots are
 committed so state changes are visible in review.
+
+### Adding a new contract
+
+1. Create a new crate directory under `contracts/`, e.g.
+   `contracts/my-contract/`, with its own `Cargo.toml` and `src/lib.rs`.
+2. Register it in the workspace `members` list in `contracts/Cargo.toml`.
+3. Annotate the contract with `#[contract]` and its interface with
+   `#[contractimpl]`, following `showcase/src/lib.rs`.
+4. Add unit tests using `soroban_sdk::Env` and commit generated snapshots.
+5. Document the crate in the **Contracts** table above.
+
+### Reference
+
+- [Soroban documentation](https://developers.stellar.org/docs/build/smart-contracts/overview)
+- [Stellar SDK / CLI docs](https://developers.stellar.org/docs/tools/developer-tools)
+- [`soroban-sdk` crate docs](https://docs.rs/soroban-sdk)
 
 ## Self-Hosting
 
