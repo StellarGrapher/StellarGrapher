@@ -234,3 +234,8 @@ New contributors can follow the [first-PR walkthrough](./docs/onboarding.md).
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+## Handsoff notes
+
+<!-- handsoff-issue-7 -->
+- #7: feat(frontend): Add key filtering/search in contract storage inspector
