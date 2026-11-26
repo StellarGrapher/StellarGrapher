@@ -55,7 +55,126 @@ docker compose up
 
 The live cursor is a single row (`id = 1`) tracking the last processed ledger and RPC page position. Live indexing remains forward-only; use the backfill command to load historical ranges. Backfill progress is tracked independently in `BackfillCursor`, allowing it to coexist with the live cursor.
 
+## Event processing flow
+
+Each poll cycle is **poll → decode → persist → notify**. The happy path and the
+two error paths (RPC failure and retention gap) are shown below.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant I as Indexer
+    participant R as Soroban RPC
+    participant DB as Postgres (Prisma)
+    participant H as Health server
+
+    loop every poll (POLL_INTERVAL_MS, or immediately when behind)
+        I->>R: getLatestLedger()
+        R-->>I: latest ledger
+        I->>R: getTransactions(startLedger=cursor+1, limit=50)
+        R-->>I: page of transactions
+
+        Note over I: decode each tx: invocations,<br/>deployments, storage changes, events
+        I->>DB: BEGIN
+        DB->>DB: createMany(...) with skipDuplicates
+        I->>DB: setCursor(lastLedger, paginationCursor)
+        I->>DB: COMMIT
+        I->>H: update snapshot (cursor, latestLedger, lag)
+    end
+
+    Note over I,R: Error path — RPC unreachable or 429
+    I->>R: getTransactions(...)
+    R--xI: error / timeout
+    Note over I: lastPollFailed=true, no cursor advance,<br/>backoffDelay(failures) then retry
+
+    Note over I,R: Error path — ledger before retention window
+    I->>R: getTransactions(startLedger=cursor+1)
+    R--xI: "oldest ledger: N" (N > cursor+1)
+    Note over I,DB: record IndexerGap, jump cursor to latest
+    I->>DB: COMMIT (gap + cursor)
+```
+
+A crash before the cursor advances is safe: the same page is reprocessed and
+`skipDuplicates` prevents double-inserts. The health server returns `503` while
+`lastPollFailed` is true or the lag exceeds `HEALTH_MAX_LEDGER_LAG`.
+
 ## Tables
+
+The entity-relationship diagram below is generated from
+`prisma/schema.prisma` (see [ADR 0002](../adr/0002-forward-only-indexer.md) for
+why the live tables are forward-only). The relationships are **logical** — they
+are expressed by the `contractId` column, not by database foreign keys.
+
+```mermaid
+erDiagram
+    Contract ||--o{ Invocation : "contractId"
+    Contract ||--o{ StorageChange : "contractId"
+    Contract ||--o{ ContractEventRecord : "contractId"
+
+    IndexerCursor {
+        int id PK
+        int lastLedger
+        string paginationCursor
+        datetime updatedAt
+    }
+    BackfillCursor {
+        int id PK
+        int fromLedger
+        int toLedger
+        int lastLedger
+        string paginationCursor
+        boolean completed
+        datetime updatedAt
+    }
+    IndexerGap {
+        string id PK
+        int fromLedger
+        int toLedger
+        string reason
+        datetime createdAt
+    }
+    Contract {
+        string contractId PK
+        string creator
+        int deploymentLedger
+        string deploymentTxHash UK
+        datetime createdAt
+    }
+    Invocation {
+        string id PK
+        string txHash UK
+        int ledger
+        datetime createdAt
+        string contractId
+        string functionName
+        json args
+        boolean successful
+        string sourceAccount
+        string returnValue
+    }
+    StorageChange {
+        string id PK
+        string contractId
+        string durability
+        string keyDisplay
+        string valueDisplay
+        string changeType
+        int ledger
+        string txHash
+        datetime createdAt
+    }
+    ContractEventRecord {
+        string id PK
+        string eventId UK
+        string contractId
+        string type
+        json topic
+        string value
+        string txHash
+        int ledger
+        datetime createdAt
+    }
+```
 
 ### `indexer_cursor`
 Singleton row (id always 1) tracking how far the indexer has processed.

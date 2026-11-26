@@ -207,6 +207,7 @@ export function parseContractEvents(wasm: Buffer): ParsedEventSpec[] {
   }
 }
 
+/** Render an XDR spec type (e.g. `ScSpecTypeVec`) as a readable name like `Vec<Symbol>`. */
 export function specTypeToString(type: xdr.ScSpecTypeDef): string {
   const kind = type.switch().name;
   switch (kind) {

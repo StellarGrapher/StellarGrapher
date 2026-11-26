@@ -114,6 +114,7 @@ export interface IndexedContract {
   deploymentLedger: number;
 }
 
+/** Creator and deployment ledger for a contract from the indexer, or null when unknown. */
 export async function getIndexedContract(contractId: string): Promise<IndexedContract | null> {
   if (!isIndexerConfigured()) return null;
   const { rows } = await getPool().query(
