@@ -203,6 +203,84 @@ describe("Horizon failure detail", () => {
   });
 });
 
+describe("Horizon transport failures", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("surfaces a fetch network error as a rejection, not a silent success", async () => {
+    const networkError = new TypeError("fetch failed");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(networkError));
+    const { getLatestLedger } = await import("./horizon");
+
+    await expect(getLatestLedger()).rejects.toBe(networkError);
+  });
+
+  it("surfaces a fetch timeout as a rejection", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("The operation timed out.", "TimeoutError")));
+    const { getTransaction } = await import("./horizon");
+
+    const err = await getTransaction("deadbeef").catch((e) => e);
+    expect(err).toBeInstanceOf(DOMException);
+    expect(err.name).toBe("TimeoutError");
+  });
+
+  it("returns a typed 404 HorizonError for a missing ledger", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ title: "Resource Missing", detail: "The resource at the url requested was not found." }),
+    }));
+    const { getLedger, isNotFound, HorizonError } = await import("./horizon");
+
+    const err = await getLedger(1).catch((e) => e);
+    expect(err).toBeInstanceOf(HorizonError);
+    expect(err.status).toBe(404);
+    expect(err.path).toBe("/ledgers/1");
+    expect(isNotFound(err)).toBe(true);
+  });
+
+  it("returns a typed 404 HorizonError for a missing account", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ title: "Resource Missing" }),
+    }));
+    const { getAccount, isNotFound } = await import("./horizon");
+
+    const err = await getAccount("GCLWKHHH").catch((e) => e);
+    expect(isNotFound(err)).toBe(true);
+    expect(err.detail).toBe("Resource Missing");
+  });
+
+  it("rejects when a 200 body is not JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token <");
+      },
+    }));
+    const { getLatestLedger } = await import("./horizon");
+
+    await expect(getLatestLedger()).rejects.toBeInstanceOf(SyntaxError);
+  });
+
+  it("rejects when a 200 body is missing the expected shape", async () => {
+    mockFetchOnce({ unexpected: true });
+    const { getLatestLedger } = await import("./horizon");
+
+    await expect(getLatestLedger()).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("rejects when a 200 body is null", async () => {
+    mockFetchOnce(null);
+    const { getTransaction } = await import("./horizon");
+
+    await expect(getTransaction("deadbeef")).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
 describe("getAccount", () => {
   const account = {
     account_id: "GCLWKHHH",
