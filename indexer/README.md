@@ -57,6 +57,7 @@ docker compose up
 | `INDEXER_CONTRACT_IDS` | *(all contracts)*                 | Comma-separated contract IDs to index. Empty or unset indexes every contract; invalid IDs abort startup |
 | `ADMIN_TOKEN`        | *(unset — admin API disabled)*       | Bearer token required by `POST /admin/reindex` |
 | `INDEXER_RETENTION_DAYS` | *(unset — unlimited)*             | Days of events and invocations to keep. A daily task deletes older rows; contracts are never pruned |
+| `SLOW_QUERY_MS`      | `500`                                | Log queries slower than this many milliseconds (params redacted) |
 
 ## Admin Re-indexing
 

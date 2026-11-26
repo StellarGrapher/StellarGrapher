@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { pathToFileURL } from "node:url";
 import { Registry, Counter, Gauge, collectDefaultMetrics } from "prom-client";
 import type { Prisma } from "@prisma/client";
-import { prisma, findCursor, seedCursor, setCursor, type Db } from "./db.js";
+import { prisma, findCursor, seedCursor, setCursor, startPoolMonitor, type Db } from "./db.js";
 import { log } from "./logger.js";
 import {
   contractCreatedEvent,
@@ -1181,6 +1181,7 @@ export async function main(): Promise<void> {
   const healthServer = startHealthServer();
   const metricsServer = startMetricsServer();
   const pruneTimer = startPruneSchedule();
+  const stopPoolMonitor = startPoolMonitor();
   process.once("SIGTERM", requestShutdown);
   process.once("SIGINT", requestShutdown);
 
@@ -1231,6 +1232,7 @@ export async function main(): Promise<void> {
   log.info("shutting down", { cursor });
   if (pruneTimer) clearInterval(pruneTimer);
   await setCursor(cursor, paginationCursor);
+  stopPoolMonitor();
   healthServer.close();
   metricsServer.close();
   await prisma.$disconnect();
