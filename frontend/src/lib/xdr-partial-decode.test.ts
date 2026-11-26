@@ -42,4 +42,37 @@ describe("decodeAnyXdr partial decodes", () => {
     // The type still round-trips, so it is identified; only its contents are lost.
     expect(decodeAnyXdr(encoded)).toEqual({ type: "LedgerEntry", fields: [], partial: true });
   });
+
+  it("returns a structured error for an unknown type code instead of throwing", () => {
+    // A ScVal whose discriminant (0x7fffffff) is not a known ScValType.
+    const unknownTypeCode = Buffer.from([0x7f, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00]).toString(
+      "base64"
+    );
+
+    let result: ReturnType<typeof decodeAnyXdr> | undefined;
+    expect(() => {
+      result = decodeAnyXdr(unknownTypeCode);
+    }).not.toThrow();
+    expect(result).toBeNull();
+  });
+
+  it("returns a structured error for a truncated buffer instead of throwing", () => {
+    const truncated = Buffer.from(ledgerEntryXdr(), "base64").subarray(0, 12).toString("base64");
+
+    let result: ReturnType<typeof decodeAnyXdr> | undefined;
+    expect(() => {
+      result = decodeAnyXdr(truncated);
+    }).not.toThrow();
+    expect(result).toBeNull();
+  });
+
+  it("returns a structured error for an all-zeros buffer instead of throwing", () => {
+    const allZeros = Buffer.alloc(32).toString("base64");
+
+    let result: ReturnType<typeof decodeAnyXdr> | undefined;
+    expect(() => {
+      result = decodeAnyXdr(allZeros);
+    }).not.toThrow();
+    expect(result).toBeNull();
+  });
 });

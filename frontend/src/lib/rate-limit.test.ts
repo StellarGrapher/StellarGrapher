@@ -6,7 +6,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { rateLimit, getClientKey, rateLimitRequest, type RateLimitResult } from "./rate-limit";
+import {
+  rateLimit,
+  rateLimitAsync,
+  getClientKey,
+  rateLimitRequest,
+  type RateLimitResult,
+  type RateLimitStore,
+} from "./rate-limit";
 
 describe("rateLimit", () => {
   beforeEach(() => {
@@ -150,6 +157,80 @@ describe("rateLimitRequest (#27)", () => {
     for (let i = 0; i < 2; i++) rateLimitRequest(req, { scope: "test-http-429", max: 2 });
     const result = rateLimitRequest(req, { scope: "test-http-429", max: 2 });
     expect(result?.status).toBe(429);
+  });
+
+  it("sets a Retry-After header on the 429 response", () => {
+    vi.useFakeTimers();
+    const req = new Request("http://localhost/");
+    rateLimitRequest(req, { scope: "test-http-retry", max: 1 });
+    const result = rateLimitRequest(req, { scope: "test-http-retry", max: 1 });
+    expect(result?.headers.get("Retry-After")).toBe("60");
+  });
+
+  it("falls back to the default scope and limit when no options are given", () => {
+    vi.useFakeTimers();
+    const req = new Request("http://localhost/");
+    for (let i = 0; i < 30; i++) {
+      expect(rateLimitRequest(req)).toBeNull();
+    }
+    expect(rateLimitRequest(req)?.status).toBe(429);
+  });
+});
+
+// Issue #94 — async store path
+describe("rateLimitAsync (#94)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function makeStore(): RateLimitStore & { counts: Map<string, number> } {
+    const counts = new Map<string, number>();
+    return {
+      counts,
+      async increment(key: string, windowMs: number) {
+        const count = (counts.get(key) ?? 0) + 1;
+        counts.set(key, count);
+        return { count, ttlMs: windowMs };
+      },
+    };
+  }
+
+  it("falls back to the in-memory limiter when no store is provided", async () => {
+    const result = await rateLimitAsync("async-fallback", 2, 60000, null);
+    expect(result).toEqual({ success: true, remaining: 1 });
+  });
+
+  it("allows requests within the limit and reports remaining", async () => {
+    const store = makeStore();
+    expect(await rateLimitAsync("async-ok", 3, 60000, store)).toEqual({
+      success: true,
+      remaining: 2,
+    });
+    expect(await rateLimitAsync("async-ok", 3, 60000, store)).toEqual({
+      success: true,
+      remaining: 1,
+    });
+  });
+
+  it("rejects requests over the limit with a retryAfter in seconds", async () => {
+    const store = makeStore();
+    await rateLimitAsync("async-limit", 1, 60000, store);
+    expect(await rateLimitAsync("async-limit", 1, 60000, store)).toEqual({
+      success: false,
+      remaining: 0,
+      retryAfter: 60,
+    });
+  });
+
+  it("keeps separate counters per client key", async () => {
+    const store = makeStore();
+    await rateLimitAsync("client-a", 1, 60000, store);
+    expect((await rateLimitAsync("client-a", 1, 60000, store)).success).toBe(false);
+    expect((await rateLimitAsync("client-b", 1, 60000, store)).success).toBe(true);
   });
 });
 
