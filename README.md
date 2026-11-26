@@ -154,6 +154,12 @@ See [contracts/README.md](./contracts/README.md) for the full deploy recipe and 
 
 Open `http://localhost:3000` and search for the contract ID printed by the deploy command. You can now browse its storage, invocation history, and emitted events against your local network.
 
+### HTTPS and Strict-Transport-Security
+
+When `NEXT_PUBLIC_SITE_URL` starts with `https://` and Prism runs in production (`NODE_ENV=production`), every response includes a `Strict-Transport-Security` header with the value `max-age=31536000; includeSubDomains`. This tells browsers to keep using HTTPS for the site for one year, including subdomains, and to refuse plain-HTTP downgrades for returning visitors.
+
+The header is only sent in production and only when the configured site URL is HTTPS, so local development over `http://localhost` is unaffected. If you terminate TLS at a reverse proxy, make sure `NEXT_PUBLIC_SITE_URL` reflects the public `https://` URL so the header is emitted.
+
 ### Rate limits and reverse proxies
 
 Every `/api/*` route is rate-limited per client: 30 requests per minute, except `/api/contract/[id]/simulate` at 10 per minute. Each route keeps its own counter, so hitting the limit on one route doesn't block the others. Over the limit, the API returns `429` with a `Retry-After` header (in seconds).
