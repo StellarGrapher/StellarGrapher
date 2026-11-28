@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getContractInfo, getContractWasmInfo } from "@/lib/soroban";
 import { rateLimitRequest } from "@/lib/rate-limit";
+import { isValidContractId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,10 @@ interface Params { params: { id: string } }
 export async function GET(req: Request, { params }: Params) {
   const limited = rateLimitRequest(req, { scope: "contract-wasm" });
   if (limited) return limited;
+
+  if (!isValidContractId(params.id)) {
+    return NextResponse.json({ error: "Invalid contract ID format" }, { status: 400 });
+  }
 
   const info = await getContractInfo(params.id);
   if (!info) {

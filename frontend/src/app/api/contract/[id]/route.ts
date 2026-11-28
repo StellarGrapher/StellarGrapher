@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getContractInfo, getContractWasmInfo, isRpcUnreachableError } from "@/lib/soroban";
 import { getIndexedGaps } from "@/lib/indexed-db";
 import { rateLimitRequest } from "@/lib/rate-limit";
+import { isValidContractId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 
@@ -116,6 +117,10 @@ function extractExpirationLedger(entry: unknown): number | null {
 export async function GET(req: Request, { params }: Params) {
   const limited = rateLimitRequest(req, { scope: "contract-info" });
   if (limited) return withCors(req, limited);
+
+  if (!isValidContractId(params.id)) {
+    return withCors(req, NextResponse.json({ error: "Invalid contract ID format" }, { status: 400 }));
+  }
 
   let info: Awaited<ReturnType<typeof getContractInfo>>;
   let historyGaps: Awaited<ReturnType<typeof getIndexedGaps>>;

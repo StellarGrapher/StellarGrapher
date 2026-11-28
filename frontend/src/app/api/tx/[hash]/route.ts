@@ -4,6 +4,7 @@ import { getTransaction } from "@/lib/horizon";
 import { getInvocationReturnValue } from "@/lib/soroban";
 import { decodeInvocation, getResourceUsage } from "@/lib/xdr";
 import { rateLimitAsync, getClientKey } from "@/lib/rate-limit";
+import { isValidTxHash } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,10 @@ export async function GET(req: Request, { params }: Params) {
       { error: "Rate limit exceeded. Try again shortly." },
       { status: 429, headers: { "Retry-After": String(limitResult.retryAfter ?? 60) } }
     );
+  }
+
+  if (!isValidTxHash(params.hash)) {
+    return NextResponse.json({ error: "Invalid transaction hash format" }, { status: 400 });
   }
 
   let tx;

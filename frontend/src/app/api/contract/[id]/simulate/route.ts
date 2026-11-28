@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getContractWasmInfo, simulateInvocation } from "@/lib/soroban";
 import { coerceArgInput } from "@/lib/xdr";
 import { rateLimitRequest } from "@/lib/rate-limit";
+import { isValidContractId } from "@/lib/route-params";
 import type { ContractTypeDef } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -86,6 +87,10 @@ function extractGasEstimate(result: unknown): GasEstimate | null {
 export async function POST(req: Request, { params }: Params) {
   const limited = rateLimitRequest(req, { scope: "contract-simulate", max: 10 });
   if (limited) return limited;
+
+  if (!isValidContractId(params.id)) {
+    return NextResponse.json({ error: "Invalid contract ID format" }, { status: 400 });
+  }
 
   const raw = await readCappedBody(req, MAX_BODY_BYTES);
   if (raw === null) {

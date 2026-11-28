@@ -3,6 +3,7 @@ import { getContractEventsPage } from "@/lib/soroban";
 import { parsePageRequest } from "@/lib/history-cursor";
 import { EVENT_PAGE_SIZE } from "@/lib/contract-lists";
 import { rateLimitRequest } from "@/lib/rate-limit";
+import { isValidContractId } from "@/lib/route-params";
 
 export const dynamic = "force-dynamic";
 
@@ -80,6 +81,10 @@ export async function GET(req: Request, { params }: Params) {
   if (limited) {
     for (const [key, value] of Object.entries(cors)) limited.headers.set(key, value);
     return limited;
+  }
+
+  if (!isValidContractId(params.id)) {
+    return NextResponse.json({ error: "Invalid contract ID format" }, { status: 400, headers: cors });
   }
 
   const url = new URL(req.url);

@@ -3,6 +3,7 @@ import { getInvocationHistoryPage } from "@/lib/soroban";
 import { parsePageRequest } from "@/lib/history-cursor";
 import { INVOCATION_PAGE_SIZE } from "@/lib/contract-lists";
 import { rateLimitRequest } from "@/lib/rate-limit";
+import { isValidContractId } from "@/lib/route-params";
 import { xdr, scValToNative } from "@stellar/stellar-sdk";
 
 export const dynamic = "force-dynamic";
@@ -157,6 +158,10 @@ export async function GET(req: Request, { params }: Params) {
       limited.headers.set(key, value);
     }
     return limited;
+  }
+
+  if (!isValidContractId(params.id)) {
+    return NextResponse.json({ error: "Invalid contract ID format" }, { status: 400, headers: cors });
   }
 
   const url = new URL(req.url);
