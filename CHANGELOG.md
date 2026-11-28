@@ -22,6 +22,7 @@ Unreleased changes live on `main` until a tagged release is cut.
 - RPC event lookup failures reported separately from empty results (PR #184)
 
 ### Fixed
+- API security: validate `contractId` and `txHash` route parameters with strict StrKey/hex regexes before RPC or database queries (#121)
 - Contract page section-item count display (PR #179)
 - XDR decoder: split partial-decode from spec fuzz, improved error paths (PR #172)
 - API hardening: Horizon error propagation, pagination fixes (PR #174)
