@@ -8,6 +8,7 @@ import { decodeInvocations, decodeTransactionFailure, getResourceUsage } from "@
 import { formatDate, formatFee, stroopsToXlm, formatNumber } from "@/lib/format";
 import { notFound } from "next/navigation";
 import DetailRow from "@/components/DetailRow";
+import Breadcrumb from "@/components/Breadcrumb";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +75,13 @@ export default async function TxPage({ params }: Props) {
 
   return (
     <div>
+      <Breadcrumb
+        items={[
+          { label: "Home", href: "/" },
+          { label: "Transactions", href: "/tx" },
+          { label: params.hash },
+        ]}
+      />
       <h1 className="text-2xl font-bold mb-1">Transaction</h1>
       <div className="flex items-start gap-2 mb-8">
         <p className="text-prism-muted font-mono text-sm break-all">{params.hash}</p>
@@ -190,26 +198,16 @@ export default async function TxPage({ params }: Props) {
   );
 }
 
-function Row({
-  label,
-  value,
-  mono,
-  link,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  link?: string;
-}) {
+function Row({ label, value, mono, link }: { label: string; value: string; mono?: boolean; link?: string }) {
   return (
-    <div className="flex justify-between gap-4 border-b border-prism-border pb-3">
-      <span className="text-prism-muted text-sm shrink-0">{label}</span>
+    <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-4 border-b border-prism-border pb-3">
+      <span className="text-prism-muted text-sm sm:w-40 shrink-0">{label}</span>
       {link ? (
-        <Link href={link} className={`text-prism-accent hover:underline text-sm break-all ${mono ? "font-mono" : ""}`}>
+        <Link href={link} className={`text-prism-accent hover:underline break-all ${mono ? "font-mono text-sm" : ""}`}>
           {value}
         </Link>
       ) : (
-        <span className={`text-sm break-all ${mono ? "font-mono" : ""}`}>{value}</span>
+        <span className={`break-all ${mono ? "font-mono text-sm" : ""}`}>{value}</span>
       )}
     </div>
   );

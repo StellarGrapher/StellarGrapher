@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { backoffDelay, commitPage, healthReport, seedLastLedger } from "./index.js";
+import {
+  backoffDelay,
+  commitPage,
+  healthReport,
+  isIndexedContract,
+  parseContractIds,
+  seedLastLedger,
+} from "./index.js";
+
+describe("contract ID filtering", () => {
+  const firstContract = `C${"A".repeat(55)}`;
+  const secondContract = `C${"B".repeat(55)}`;
+
+  it("treats unset or blank filters as indexing all contracts", () => {
+    expect(parseContractIds(undefined)).toBeNull();
+    expect(parseContractIds(" , ")).toBeNull();
+    expect(isIndexedContract(firstContract, null)).toBe(true);
+  });
+
+  it("parses and applies a comma-separated allowlist", () => {
+    const filter = parseContractIds(` ${firstContract}, ${secondContract} `);
+    expect(filter).toEqual(new Set([firstContract, secondContract]));
+    expect(isIndexedContract(firstContract, filter)).toBe(true);
+    expect(isIndexedContract(`C${"C".repeat(55)}`, filter)).toBe(false);
+  });
+});
 
 describe("backoffDelay", () => {
   it("doubles the delay for each consecutive failure", () => {
@@ -90,8 +115,8 @@ describe("commitPage", () => {
         const staged = { gaps: [] as unknown[], cursor: undefined as undefined | typeof committed.cursor };
         const db = {
           indexerGap: {
-            create: async ({ data }: { data: unknown }) => {
-              staged.gaps.push(data);
+            createMany: async ({ data }: { data: unknown[] }) => {
+              staged.gaps.push(...data);
             },
           },
           indexerCursor: {

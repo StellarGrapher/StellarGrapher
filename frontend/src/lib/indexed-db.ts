@@ -177,6 +177,95 @@ export async function getIndexedEvents(
   };
 }
 
+export interface IndexedTokenEvent {
+  eventId: string;
+  tokenContractId: string;
+  eventType: string;
+  from: string | null;
+  to: string | null;
+  spender: string | null;
+  amount: string;
+  txHash: string;
+  ledger: number;
+  createdAt: string;
+}
+
+/**
+ * One page of an account's SEP-41 token events (transfer, mint, burn, approve)
+ * since the indexer started, newest first. `before` continues from the cursor a
+ * previous page returned.
+ */
+export async function getIndexedTokenTransfers(
+  accountId: string,
+  { limit, before }: PageRequest
+): Promise<HistoryPage<IndexedTokenEvent>> {
+  if (!isIndexerConfigured()) return { items: [], nextCursor: null };
+  const { rows } = await getPool().query(
+    `SELECT id, "eventId", "tokenContractId", "eventType", "from", "to", spender, amount,
+            "txHash", ledger, "createdAt"
+     FROM "TokenEvent"
+     WHERE ("from" = $1 OR "to" = $1)
+       AND ($2::int IS NULL OR (ledger, id) < ($2::int, $3::text))
+     ORDER BY ledger DESC, id DESC
+     LIMIT $4`,
+    [accountId, before?.ledger ?? null, before?.id ?? null, limit + 1]
+  );
+  const page = takePage(rows, limit);
+  return {
+    items: page.rows.map((r) => ({
+      eventId: r.eventId,
+      tokenContractId: r.tokenContractId,
+      eventType: r.eventType,
+      from: r.from,
+      to: r.to,
+      spender: r.spender,
+      amount: r.amount,
+      txHash: r.txHash,
+      ledger: r.ledger,
+      createdAt: r.createdAt.toISOString(),
+    })),
+    nextCursor: page.nextCursor,
+  };
+}
+
+export interface IndexedEvent {
+  eventId: string;
+  contractId: string;
+  type: string;
+  topic: string[];
+  value: string;
+  txHash: string;
+  ledger: number;
+  createdAt: string;
+}
+
+/**
+ * Full-text search over decoded event topics and values, newest first. Uses the
+ * `search_vector` tsvector column the indexer maintains via trigger. Returns an
+ * empty list when the indexer is not configured.
+ */
+export async function searchIndexedEvents(query: string, limit: number): Promise<IndexedEvent[]> {
+  if (!isIndexerConfigured()) return [];
+  const { rows } = await getPool().query(
+    `SELECT "eventId", "contractId", type, topic, value, "txHash", ledger, "createdAt"
+     FROM "ContractEventRecord"
+     WHERE "search_vector" @@ websearch_to_tsquery('simple', $1)
+     ORDER BY ts_rank("search_vector", websearch_to_tsquery('simple', $1)) DESC, ledger DESC, id DESC
+     LIMIT $2`,
+    [query, limit]
+  );
+  return rows.map((r) => ({
+    eventId: r.eventId,
+    contractId: r.contractId,
+    type: r.type,
+    topic: r.topic,
+    value: r.value,
+    txHash: r.txHash,
+    ledger: r.ledger,
+    createdAt: r.createdAt.toISOString(),
+  }));
+}
+
 export interface IndexedStorageEntry {
   durability: string;
   keyDisplay: string;
@@ -208,6 +297,51 @@ export async function getIndexedStorageEntries(contractId: string): Promise<Inde
       valueDisplay: r.valueDisplay,
       ledger: r.ledger,
     }));
+}
+
+export interface IndexedAccountContract {
+  contractId: string;
+  creator: string;
+  deployerAccountId: string | null;
+  deploymentLedger: number;
+  deploymentTxHash: string;
+  createdAt: string;
+}
+
+/**
+ * One page of the contracts an account deployed, newest first. `before`
+ * continues from the cursor a previous page returned.
+ */
+export async function getIndexedAccountContracts(
+  accountId: string,
+  { limit, before }: PageRequest
+): Promise<HistoryPage<IndexedAccountContract>> {
+  if (!isIndexerConfigured()) return { items: [], nextCursor: null };
+  const { rows } = await getPool().query(
+    `SELECT "contractId", creator, "deployerAccountId", "deploymentLedger",
+            "deploymentTxHash", "createdAt"
+     FROM "Contract"
+     WHERE "deployerAccountId" = $1
+       AND ($2::int IS NULL OR ("deploymentLedger", "contractId") < ($2::int, $3::text))
+     ORDER BY "deploymentLedger" DESC, "contractId" DESC
+     LIMIT $4`,
+    [accountId, before?.ledger ?? null, before?.id ?? null, limit + 1]
+  );
+  const page = takePage(
+    rows.map((r) => ({ ...r, ledger: r.deploymentLedger, id: r.contractId })),
+    limit
+  );
+  return {
+    items: page.rows.map((r) => ({
+      contractId: r.contractId,
+      creator: r.creator,
+      deployerAccountId: r.deployerAccountId,
+      deploymentLedger: r.deploymentLedger,
+      deploymentTxHash: r.deploymentTxHash,
+      createdAt: r.createdAt.toISOString(),
+    })),
+    nextCursor: page.nextCursor,
+  };
 }
 
 export interface IndexedGap {

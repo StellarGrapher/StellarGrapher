@@ -19,7 +19,7 @@ function maxXdrInputBytes(): number {
 }
 
 interface Props {
-  searchParams: { input?: string };
+  searchParams: { input?: string; xdr?: string };
 }
 
 // Security: decoded XDR values (including ScString) are untrusted input and must
@@ -27,7 +27,8 @@ interface Props {
 // through React's safe JSX text path and does not use `dangerouslySetInnerHTML`.
 // If raw HTML rendering is ever required, sanitize with DOMPurify first.
 export default async function XdrPage({ searchParams }: Props) {
-  const input = searchParams.input ? base64FromQueryParam(searchParams.input) : undefined;
+  const rawInput = searchParams.xdr ?? searchParams.input;
+  const input = rawInput ? base64FromQueryParam(rawInput) : undefined;
 
   if (input && Buffer.byteLength(input, "utf8") > maxXdrInputBytes()) {
     return (
@@ -39,7 +40,6 @@ export default async function XdrPage({ searchParams }: Props) {
       </div>
     );
   }
-
   const result = input ? await decodeXdrAction(input) : null;
 
   return (

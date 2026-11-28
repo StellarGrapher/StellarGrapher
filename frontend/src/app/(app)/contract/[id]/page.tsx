@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { getContractInfo, getContractWasmInfo, getContractEventsPage, getInvocationHistoryPage, getFullStorageEntries } from "@/lib/soroban";
+import { getContractInfo, getContractWasmInfo, getContractEventsPage, getInvocationHistoryPage, getFullStorageEntries, isRpcUnreachableError } from "@/lib/soroban";
 import { isIndexerConfigured } from "@/lib/indexed-db";
 import ContractOverview from "@/components/ContractOverview";
 import ContractStorageView from "@/components/ContractStorageView";
@@ -8,6 +8,8 @@ import InvokeTool from "@/components/InvokeTool";
 import LiveEventLog from "@/components/LiveEventLog";
 import CopyButton from "@/components/CopyButton";
 import SectionHeader from "@/components/SectionHeader";
+import Breadcrumb from "@/components/Breadcrumb";
+import BookmarkButton from "@/components/BookmarkButton";
 import { EVENT_PAGE_SIZE, INVOCATION_PAGE_SIZE } from "@/lib/contract-lists";
 
 export const dynamic = "force-dynamic";
@@ -18,9 +20,51 @@ interface Props { params: { id: string } }
 // through React's safe text rendering path (JSX text nodes / props), never via
 // dangerouslySetInnerHTML. This page contains no dangerouslySetInnerHTML usage.
 
+const SELF_HOSTING_DOCS_URL = "https://github.com/prism-explorer/prism#self-hosting";
+
+function RpcErrorCard({ rpcUrl, kind }: { rpcUrl: string; kind: "unreachable" | "not-found" }) {
+  const isUnreachable = kind === "unreachable";
+  return (
+    <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-6">
+      <h2 className="text-lg font-semibold text-red-400 mb-2">
+        {isUnreachable ? "RPC node unreachable" : "Contract not found"}
+      </h2>
+      <p className="text-sm text-prism-muted mb-4">
+        {isUnreachable
+          ? "The explorer could not reach the configured Soroban RPC endpoint. The node may be down, misconfigured, or blocked by the network."
+          : "The RPC node responded, but no contract exists at this address. Double-check the contract ID."}
+      </p>
+      <div className="mb-4">
+        <p className="text-xs uppercase tracking-wide text-prism-muted mb-1">Configured RPC URL</p>
+        <code className="block break-all rounded bg-black/30 px-3 py-2 font-mono text-xs text-prism-text">
+          {rpcUrl || "(NEXT_PUBLIC_SOROBAN_RPC_URL is not set)"}
+        </code>
+      </div>
+      {isUnreachable && (
+        <p className="text-sm text-prism-muted mb-4">
+          Verify the <code className="font-mono">NEXT_PUBLIC_SOROBAN_RPC_URL</code> environment variable points to a reachable node, then reload.
+        </p>
+      )}
+      <a
+        href={SELF_HOSTING_DOCS_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-block text-sm font-medium text-prism-accent hover:underline"
+      >
+        Read the self-hosting docs →
+      </a>
+    </div>
+  );
+}
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const contractId = params.id;
-  const info = await getContractInfo(contractId);
+  let info: Awaited<ReturnType<typeof getContractInfo>> = null;
+  try {
+    info = await getContractInfo(contractId);
+  } catch (error) {
+    console.warn("[contract] metadata lookup failed", error);
+  }
   const title = `Contract ${contractId}`;
   const description = info
     ? `Contract ${contractId} on Stellar Soroban — executable: ${info.executable}.`
@@ -33,9 +77,59 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
+const TTL_DOCS_URL = "https://developers.stellar.org/docs/learn/smart-contract-internals/state-archival";
+
+function TtlBadge({ ttl }: { ttl: number | null | undefined }) {
+  if (ttl == null) return null;
+  if (ttl < 100) {
+    return (
+      <span className="shrink-0 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white">
+        Critical: expires in {ttl.toLocaleString()} ledgers
+      </span>
+    );
+  }
+  if (ttl < 1000) {
+    return (
+      <span className="shrink-0 rounded bg-orange-500 px-2 py-1 text-xs font-semibold text-white">
+        Warning: expires in {ttl.toLocaleString()} ledgers
+      </span>
+    );
+  }
+  return null;
+}
+
 export default async function ContractPage({ params }: Props) {
   const contractId = params.id;
-  const info = await getContractInfo(contractId);
+  const rpcUrl = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ?? "";
+
+  let info: Awaited<ReturnType<typeof getContractInfo>> = null;
+  let rpcError: unknown = null;
+  try {
+    info = await getContractInfo(contractId);
+  } catch (error) {
+    rpcError = error;
+  }
+
+  if (rpcError) {
+    return (
+      <div>
+        <Breadcrumb
+          items={[
+            { label: "Home", href: "/" },
+            { label: "Contracts", href: "/contracts" },
+            { label: contractId },
+          ]}
+        />
+        <h1 className="text-2xl font-bold mb-1">Contract</h1>
+        <div className="flex items-start gap-2 mb-8">
+          <p className="text-prism-muted font-mono text-sm break-all">{contractId}</p>
+          <CopyButton value={contractId} what="contract ID" />
+        </div>
+        <RpcErrorCard rpcUrl={rpcUrl} kind={isRpcUnreachableError(rpcError) ? "unreachable" : "not-found"} />
+      </div>
+    );
+  }
+
   const [wasm, eventsPage, invocationsPage, fullStorage] = await Promise.all([
     info?.executable === "wasm" ? getContractWasmInfo(contractId) : Promise.resolve(null),
     getContractEventsPage(contractId, { limit: EVENT_PAGE_SIZE }),
@@ -46,13 +140,53 @@ export default async function ContractPage({ params }: Props) {
   const rpcFallback = !isIndexerConfigured();
   const storageCount = fullStorage.length > 0 ? fullStorage.length : (info?.instanceStorage ?? []).length;
 
+  const wasmSizeKb = wasm?.size != null ? wasm.size / 1024 : null;
+
+  const expirationLedger = info?.liveUntilLedgerSeq ?? null;
+  const ttl = info?.ttl ?? null;
+
   return (
     <div>
+      <Breadcrumb
+        items={[
+          { label: "Home", href: "/" },
+          { label: "Contracts", href: "/contracts" },
+          { label: contractId },
+        ]}
+      />
       <h1 className="text-2xl font-bold mb-1">Contract</h1>
       <div className="flex items-start gap-2 mb-8">
         <p className="text-prism-muted font-mono text-sm break-all">{contractId}</p>
         <CopyButton value={contractId} what="contract ID" />
+        <BookmarkButton contractId={contractId} />
+        {wasmSizeKb != null && (
+          <span className="ml-auto shrink-0 rounded bg-prism-surface px-2 py-1 text-xs font-mono text-prism-muted">
+            WASM: {wasmSizeKb.toFixed(2)} KB
+          </span>
+        )}
       </div>
+
+      <div className="mb-8 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-prism-muted">Expiration ledger:</span>
+        <span className="font-mono">
+          {expirationLedger != null ? expirationLedger.toLocaleString() : "—"}
+        </span>
+        <TtlBadge ttl={ttl} />
+        <a
+          href={TTL_DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-prism-accent underline hover:no-underline"
+        >
+          Extend TTL
+        </a>
+      </div>
+
+      {!info && (
+        <div className="mb-8">
+          <RpcErrorCard rpcUrl={rpcUrl} kind="not-found" />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-8">
         <section>
@@ -87,6 +221,8 @@ export default async function ContractPage({ params }: Props) {
             limit={INVOCATION_PAGE_SIZE}
             derivedFromEvents={rpcFallback}
             title="Recent Invocations"
+            stickyHeader
+            exportCsv
           />
         </section>
 
@@ -100,6 +236,8 @@ export default async function ContractPage({ params }: Props) {
             rpcFallback={rpcFallback}
             specs={wasm?.events}
             title="Events"
+            stickyHeader
+            exportCsv
           />
         </section>
       </div>

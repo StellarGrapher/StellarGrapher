@@ -47,6 +47,19 @@ export interface AccountRecord {
   signerCount: number;
 }
 
+export interface TokenTransfer {
+  eventId: string;
+  tokenContractId: string;
+  eventType: string;
+  from: string | null;
+  to: string | null;
+  spender: string | null;
+  amount: string;
+  txHash: string;
+  ledger: number;
+  timestamp: string;
+}
+
 export interface ContractEvent {
   id: string;
   contractId: string;
@@ -72,6 +85,7 @@ export interface ContractInfo {
   executable: "wasm" | "stellar_asset";
   wasmHash?: string;
   liveUntilLedgerSeq?: number;
+  ttl?: number;
   lastModifiedLedgerSeq?: number;
   instanceStorage: StorageEntry[];
   assetDetails?: {

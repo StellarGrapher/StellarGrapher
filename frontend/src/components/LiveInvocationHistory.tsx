@@ -19,6 +19,8 @@ interface Props {
   /** Rendered after the count in the section header. */
   children?: ReactNode;
   intervalMs?: number;
+  stickyHeader?: boolean;
+  exportCsv?: boolean;
 }
 
 export default function LiveInvocationHistory({
@@ -30,6 +32,8 @@ export default function LiveInvocationHistory({
   title,
   children,
   intervalMs = 15_000,
+  stickyHeader = false,
+  exportCsv = false,
 }: Props) {
   const [items, setItems] = useState(initialItems);
   const [nextCursor, setNextCursor] = useState(initialNextCursor);
@@ -51,7 +55,22 @@ export default function LiveInvocationHistory({
 
   return (
     <>
-      <SectionHeader title="Recent Invocations" count={items.length} cap={INVOCATION_PAGE_SIZE} live />
+      <div className="flex items-start justify-between gap-3">
+        <div className={stickyHeader ? "sticky top-0 z-10 bg-prism-bg" : undefined}>
+          <SectionHeader title={title} count={items.length} cap={INVOCATION_PAGE_SIZE} live />
+        </div>
+        <div className="flex items-center gap-3">
+          {children}
+          {exportCsv && (
+            <a
+              href={`/api/contract/${encodeURIComponent(contractId)}/invocations?format=csv`}
+              className="text-sm text-prism-accent hover:underline"
+            >
+              Export CSV
+            </a>
+          )}
+        </div>
+      </div>
       <InvocationHistory items={items} derivedFromEvents={derivedFromEvents} />
     </>
   );

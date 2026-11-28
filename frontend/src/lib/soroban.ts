@@ -23,6 +23,7 @@ import {
   getIndexedEvents,
   getIndexedStorageEntries,
   getIndexedInvocationReturnValue,
+  searchIndexedEvents,
 } from "./indexed-db";
 
 const RPC_URL = config.sorobanRpcUrl;
@@ -31,6 +32,13 @@ let _server: rpc.Server | undefined;
 function server(): rpc.Server {
   if (!_server) _server = new rpc.Server(RPC_URL, { timeout: 10_000 });
   return _server;
+}
+
+export function isRpcUnreachableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed|network|unreachable|timeout|socket hang up/i.test(
+    message,
+  );
 }
 
 /**
@@ -78,13 +86,25 @@ export async function getContractInfo(contractId: string): Promise<ContractInfo 
         ? assetDetails 
         : undefined,
     };
-  } catch {
+  } catch (error) {
+    if (isRpcUnreachableError(error)) throw error;
     return null;
+  }
+
+  let ttl: number | undefined;
+  if (info.liveUntilLedgerSeq !== undefined) {
+    try {
+      const latest = await server().getLatestLedger();
+      ttl = Math.max(0, info.liveUntilLedgerSeq - latest.sequence);
+    } catch (err) {
+      console.warn("[soroban] could not fetch latest ledger for contract TTL", err);
+    }
   }
 
   const indexed = await getIndexedContract(contractId);
   return {
     ...info,
+    ttl,
     creator: indexed?.creator,
     deploymentLedger: indexed?.deploymentLedger,
   };
@@ -237,6 +257,26 @@ export async function getContractEventsPage(
   }
   if (request.before) return { items: [], nextCursor: null, error: null };
   return { ...(await getContractEventsFromRpc(contractId, request.limit)), nextCursor: null };
+}
+
+/**
+ * Full-text search over decoded event topics and values. Only the indexer has
+ * the decoded history to search, so this returns nothing when it is not
+ * configured.
+ */
+export async function searchEvents(query: string, limit = 20): Promise<ContractEvent[]> {
+  if (!isIndexerConfigured()) return [];
+  const events = await searchIndexedEvents(query, limit);
+  return events.map((e) => ({
+    id: e.eventId,
+    contractId: e.contractId,
+    type: e.type,
+    topic: e.topic,
+    value: e.value,
+    txHash: e.txHash,
+    ledger: e.ledger,
+    timestamp: e.createdAt,
+  }));
 }
 
 interface RpcEventsResult {

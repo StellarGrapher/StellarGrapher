@@ -1,4 +1,21 @@
+# Optional local Stellar network:
+#   docker compose --profile local-network up -d stellar-quickstart
 services:
+  stellar-quickstart:
+    image: stellar/quickstart:latest
+    container_name: prism-stellar-quickstart
+    command: --local
+    profiles:
+      - local-network
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     environment:

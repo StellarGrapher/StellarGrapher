@@ -93,6 +93,73 @@ This runs Postgres, the indexer (`indexer/`), and the frontend together — see 
 
 The Postgres port is published only on `127.0.0.1`. Compose uses `prism` as a local-development-only default for `POSTGRES_PASSWORD`; set a strong value in your environment before starting the stack if you need a different password. Do not use the default for a production deployment.
 
+### Running against a local network (stellar-quickstart)
+
+If you're building Soroban contracts, you can run Prism against a local network instead of testnet or mainnet. [stellar-quickstart](https://github.com/stellar/stellar-quickstart) spins up a complete local Stellar network (Horizon, Soroban RPC, and a friendbot) in Docker, so you can deploy and inspect contracts without touching a public network.
+
+**1. Start stellar-quickstart.**
+
+```bash
+docker run --rm -p 8000:8000 stellar/quickstart:latest \
+  --local \
+  --enable-soroban-rpc
+```
+
+This exposes:
+
+- Horizon at `http://localhost:8000`
+- Soroban RPC at `http://localhost:8000/soroban/rpc`
+- Friendbot at `http://localhost:8000/friendbot`
+
+Wait until the container logs report the network is up before continuing.
+
+**2. Point Prism at the local network.**
+
+In `frontend/.env.local`, set the RPC and Horizon URLs to the quickstart endpoints:
+
+```bash
+NEXT_PUBLIC_SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc
+NEXT_PUBLIC_HORIZON_URL=http://localhost:8000
+```
+
+Then start the frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Prism now reads live chain state from your local network. If you're running the full stack with the indexer, point the indexer's RPC/Horizon settings at the same URLs so it indexes the local network too.
+
+**3. Deploy the showcase contract.**
+
+Fund a local account with friendbot, then build and deploy `contracts/showcase` to the local network:
+
+```bash
+# Fund a local identity
+curl "http://localhost:8000/friendbot?addr=$(stellar keys address local)"
+
+# Build and deploy the showcase contract
+cd contracts/showcase
+stellar contract build
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/showcase.wasm \
+  --source local \
+  --network local
+```
+
+See [contracts/README.md](./contracts/README.md) for the full deploy recipe and the functions the showcase contract exposes.
+
+**4. Inspect it in Prism.**
+
+Open `http://localhost:3000` and search for the contract ID printed by the deploy command. You can now browse its storage, invocation history, and emitted events against your local network.
+
+### HTTPS and Strict-Transport-Security
+
+When `NEXT_PUBLIC_SITE_URL` starts with `https://` and Prism runs in production (`NODE_ENV=production`), every response includes a `Strict-Transport-Security` header with the value `max-age=31536000; includeSubDomains`. This tells browsers to keep using HTTPS for the site for one year, including subdomains, and to refuse plain-HTTP downgrades for returning visitors.
+
+The header is only sent in production and only when the configured site URL is HTTPS, so local development over `http://localhost` is unaffected. If you terminate TLS at a reverse proxy, make sure `NEXT_PUBLIC_SITE_URL` reflects the public `https://` URL so the header is emitted.
+
 ### Rate limits and reverse proxies
 
 Every `/api/*` route is rate-limited per client: 30 requests per minute, except `/api/contract/[id]/simulate` at 10 per minute. Each route keeps its own counter, so hitting the limit on one route doesn't block the others. Over the limit, the API returns `429` with a `Retry-After` header (in seconds).
@@ -167,3 +234,12 @@ New contributors can follow the [first-PR walkthrough](./docs/onboarding.md).
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+## Handsoff notes
+
+<!-- handsoff-issue-7 -->
+- #7: feat(frontend): Add key filtering/search in contract storage inspector
+<!-- handsoff-issue-2 -->
+- #2: feat(frontend): Implement contract search autocomplete with recent searches
+<!-- handsoff-issue-22 -->
+- #22: feat(frontend): Persist XDR decoder history in session storage

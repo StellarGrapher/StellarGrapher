@@ -80,11 +80,18 @@ model Invocation {
 model Contract {
   contractId       String   @id
   creator          String
+  // Account that signed the deploying invokeHostFunction operation (the
+  // operation source, or the transaction source when it inherits one).
+  deployerAccountId String?
   deploymentLedger Int
   deploymentTxHash String   @unique
   createdAt        DateTime
+  // Ledger at which the contract instance entry expires (from getLedgerEntries
+  // liveUntilLedgerSeq). Null until observed or when the entry has no TTL.
+  expiresAtLedger  Int?
 
   @@index([creator])
+  @@index([deployerAccountId])
 }
 
 // One row per observed change to a contract storage entry (not just the
@@ -96,6 +103,7 @@ model StorageChange {
   id           String   @id @default(cuid())
   contractId   String
   durability   String // persistent | temporary | instance
+  changeIndex  Int // position of the change within the transaction's meta
   keyDisplay   String // human-readable decoded key ("__instance__" for the contract instance entry)
   valueDisplay String? // human-readable decoded value; null when changeType is "removed"
   changeType   String // created | updated | removed | state
@@ -103,8 +111,32 @@ model StorageChange {
   txHash       String
   createdAt    DateTime
 
-  @@unique([txHash, contractId, keyDisplay, durability, changeType])
+  // Keyed by position, not by decoded content: a transaction can touch the same
+  // key twice (state then updated), and reprocessing it after a restart must
+  // map onto the same rows so skipDuplicates can ignore them.
+  @@unique([txHash, changeIndex])
   @@index([contractId, keyDisplay, durability, ledger])
+  @@index([contractId, ledger])
+}
+
+// Per-invocation before/after view of a contract storage entry, derived from
+// the transaction meta's ledgerEntryState (before) and created/updated/removed
+// (after) changes. Unlike StorageChange this is keyed by invocation, so a
+// caller can answer "what did this call change?" directly.
+model InvocationStorageChange {
+  id           String   @id @default(cuid())
+  invocationId String
+  contractId   String
+  durability   String // persistent | temporary | instance
+  key          String // human-readable decoded key ("__instance__" for the contract instance entry)
+  valueBefore  String? // decoded value before the invocation; null when the key did not exist
+  valueAfter   String? // decoded value after the invocation; null when the key was removed
+  ledger       Int
+  txHash       String
+  createdAt    DateTime
+
+  @@unique([invocationId, key, durability])
+  @@index([invocationId])
   @@index([contractId, ledger])
 }
 
@@ -121,10 +153,38 @@ model ContractEventRecord {
   wasmHash   String?
   txHash     String
   ledger     Int
+  eventIndex Int
   createdAt  DateTime
   // Base64 ContractEvent XDR the decoded columns above were derived from.
   // Null for synthesized `contract_created` events, which have no XDR.
   rawXdr     String?
 
+  // Full-text search document over the decoded topic and value. Maintained by
+  // the ContractEventRecord_search_vector trigger (see the fts migration), so
+  // it is never written from application code.
+  searchVector Unsupported("tsvector")? @map("search_vector")
+
+  @@index([contractId, ledger, eventIndex])
   @@index([contractId, ledger])
+}
+
+// SEP-41 token events (transfer, mint, burn, approve), decoded out of the
+// contract events above so an account's token activity is queryable by
+// address without scanning every event's topics.
+model TokenEvent {
+  id              String   @id @default(cuid())
+  eventId         String   @unique
+  tokenContractId String
+  eventType       String // transfer | mint | burn | approve
+  from            String? // null for mint
+  to              String? // null for burn
+  spender         String? // set for approve
+  amount          String // decimal string; i128 doesn't fit a JS number
+  txHash          String
+  ledger          Int
+  createdAt       DateTime
+
+  @@index([from, ledger])
+  @@index([to, ledger])
+  @@index([tokenContractId, ledger])
 }

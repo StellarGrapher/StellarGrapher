@@ -4,6 +4,7 @@ import { nativeToScVal, rpc, StrKey } from "@stellar/stellar-sdk";
 vi.mock("./indexed-db", () => ({
   isIndexerConfigured: vi.fn(),
   getIndexedEvents: vi.fn(),
+  searchIndexedEvents: vi.fn(),
   getIndexedContract: vi.fn().mockResolvedValue(null),
   getIndexedInvocationReturnValue: vi.fn().mockResolvedValue(null),
   getIndexedInvocations: vi.fn(),
@@ -21,6 +22,7 @@ import {
 import {
   getIndexedContract,
   getIndexedEvents,
+  searchIndexedEvents,
   getIndexedInvocationReturnValue,
   getIndexedInvocations,
   isIndexerConfigured,
@@ -77,6 +79,11 @@ describe("getContractInfo", () => {
   it("returns null when the RPC request fails", async () => {
     vi.spyOn(rpc.Server.prototype, "getContractData").mockRejectedValue(new Error("RPC down"));
     await expect(getContractInfo("contract-id")).resolves.toBeNull();
+  });
+
+  it("rethrows RPC transport failures so callers can distinguish outages", async () => {
+    vi.spyOn(rpc.Server.prototype, "getContractData").mockRejectedValue(new Error("fetch failed"));
+    await expect(getContractInfo("contract-id")).rejects.toThrow("fetch failed");
   });
 
   it("includes indexed deployment information", async () => {

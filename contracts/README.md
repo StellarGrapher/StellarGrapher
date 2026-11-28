@@ -91,7 +91,7 @@ in the topic list. `AmountsTallied` uses `vec` (positional) data and
 | `AmountsTallied` | *(none)* | `[count: u32, total: i128]` (vec) | `tally` |
 | `CounterValue` | *(none)* | `counter: u32` (single-value) | `bump` |
 
-## Local development
+## Contributing to the contracts
 
 Run commands from the repository root. Each command below includes a typical
 successful result; timing and compiler progress can differ by machine.
@@ -148,8 +148,150 @@ Example output:
 ```
 
 The pinned Rust toolchain installs `wasm32v1-none`, rustfmt, and clippy. Tests
-also write ledger snapshots to `showcase/test_snapshots/`; those snapshots are
+also write ledger snapshots to `<crate>/test_snapshots/`; those snapshots are
 committed so state changes are visible in review.
+
+### Adding a new contract
+
+1. Create a new crate directory under `contracts/`, e.g.
+   `contracts/my-contract/`, with its own `Cargo.toml` and `src/lib.rs`.
+2. Register it in the workspace `members` list in `contracts/Cargo.toml`.
+3. Annotate the contract with `#[contract]` and its interface with
+   `#[contractimpl]`, following `showcase/src/lib.rs`.
+4. Add unit tests using `soroban_sdk::Env` and commit generated snapshots.
+5. Document the crate in the **Contracts** table above.
+
+### Reference
+
+- [Soroban documentation](https://developers.stellar.org/docs/build/smart-contracts/overview)
+- [Stellar SDK / CLI docs](https://developers.stellar.org/docs/tools/developer-tools)
+- [`soroban-sdk` crate docs](https://docs.rs/soroban-sdk)
+
+## Self-Hosting
+
+Run Prism against a local network so you can iterate on Soroban contracts
+without waiting on testnet ingestion. This guide uses
+[`stellar-quickstart`](https://github.com/stellar/stellar-quickstart) for the
+local network and the `showcase` contract as sample activity.
+
+### 1. Start a local network with Docker
+
+```bash
+docker run --rm -it \
+  --name stellar-quickstart \
+  -p 8000:8000 \
+  stellar/quickstart:latest \
+  --local --enable-soroban-rpc
+```
+
+Example output:
+
+```text
+Starting Stellar Quickstart
+...
+Soroban RPC is running at http://localhost:8000/soroban/rpc
+```
+
+This exposes the Horizon API at `http://localhost:8000` and Soroban RPC at
+`http://localhost:8000/soroban/rpc`. Leave the container running in its own
+terminal.
+
+### 2. Point Prism at the local network
+
+Start Prism with the local RPC and network passphrase. From the repository
+root:
+
+```bash
+NEXT_PUBLIC_STELLAR_NETWORK=local \
+NEXT_PUBLIC_SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc \
+NEXT_PUBLIC_HORIZON_URL=http://localhost:8000 \
+NEXT_PUBLIC_NETWORK_PASSPHRASE="Standalone Network ; February 2017" \
+npm run dev
+```
+
+Example output:
+
+```text
+▲ Next.js ready on http://localhost:3000
+```
+
+Open `http://localhost:3000` and confirm the network indicator shows the local
+network.
+
+### 3. Deploy the showcase contract locally
+
+Create and fund a local identity, then build and deploy the contract against
+the local network:
+
+```bash
+stellar keys generate --global local --network local --fund
+```
+
+Example output:
+
+```text
+✅ Funded account local on local
+```
+
+```bash
+stellar contract build
+```
+
+Example output:
+
+```text
+ℹ️  Build Complete
+```
+
+```bash
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/prism_showcase.wasm \
+  --source local --network local
+```
+
+Example output:
+
+```text
+CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+```
+
+Save that value as `CONTRACT_ID`, then initialize the contract and generate
+sample activity:
+
+```bash
+stellar contract invoke --id "$CONTRACT_ID" --source local --network local \
+  -- init --admin "$(stellar keys address local)"
+
+stellar contract invoke --id "$CONTRACT_ID" --source local --network local \
+  -- bump --by 7
+
+stellar contract invoke --id "$CONTRACT_ID" --source local --network local \
+  -- put_note --author "$(stellar keys address local)" --name hello --body "first revision"
+
+stellar contract invoke --id "$CONTRACT_ID" --source local --network local \
+  -- tally --amounts '[10,20,12]'
+```
+
+Example output:
+
+```text
+null
+7
+1
+42
+```
+
+### 4. Inspect the contract in Prism
+
+Open the contract page in your local Prism instance:
+
+```text
+http://localhost:3000/contract/<CONTRACT_ID>
+```
+
+Because the local network produces ledgers immediately, storage, events, and
+invocations appear without the ingestion delay of a public network. To reset,
+stop the `stellar-quickstart` container and start it again from step 1.
 
 ## Automated testnet deployment
 

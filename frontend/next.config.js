@@ -28,6 +28,10 @@ const contentSecurityPolicy = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+// Enforce HTTPS for returning visitors, but only for production HTTPS deployments.
+const isHttpsDeployment =
+  !isDev && (process.env.NEXT_PUBLIC_SITE_URL || "").startsWith("https://");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -40,6 +44,14 @@ const nextConfig = {
           { key: "Content-Security-Policy", value: contentSecurityPolicy },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          ...(isHttpsDeployment
+            ? [
+                {
+                  key: "Strict-Transport-Security",
+                  value: "max-age=31536000; includeSubDomains",
+                },
+              ]
+            : []),
         ],
       },
     ];

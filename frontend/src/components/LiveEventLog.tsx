@@ -19,6 +19,8 @@ interface Props {
   specs?: ContractEventSpec[];
   title: string;
   intervalMs?: number;
+  stickyHeader?: boolean;
+  exportCsv?: boolean;
 }
 
 export default function LiveEventLog({
@@ -31,6 +33,8 @@ export default function LiveEventLog({
   specs,
   title,
   intervalMs = 15_000,
+  stickyHeader = false,
+  exportCsv = false,
 }: Props) {
   const [events, setEvents] = useState(initialEvents);
   const [nextCursor, setNextCursor] = useState(initialNextCursor);
@@ -57,12 +61,24 @@ export default function LiveEventLog({
 
   return (
     <>
-      <SectionHeader
-        title={title}
-        count={events.length}
-        cap={nextCursor !== null || rpcFallback ? limit : undefined}
-        live
-      />
+      <div className="flex items-start justify-between gap-3">
+        <div className={stickyHeader ? "sticky top-0 z-10 bg-prism-bg" : undefined}>
+          <SectionHeader
+            title={title}
+            count={events.length}
+            cap={nextCursor !== null || rpcFallback ? limit : undefined}
+            live
+          />
+        </div>
+        {exportCsv && (
+          <a
+            href={`/api/contract/${encodeURIComponent(contractId)}/events?format=csv`}
+            className="text-sm text-prism-accent hover:underline"
+          >
+            Export CSV
+          </a>
+        )}
+      </div>
       <EventLog events={events} specs={specs} error={error} />
     </>
   );

@@ -1,4 +1,11 @@
-import { Address, StrKey, xdr, scValToNative } from "@stellar/stellar-sdk";
+import {
+  Address,
+  StrKey,
+  encodeMuxedAccountToAddress,
+  xdr,
+  scValToNative,
+  type rpc,
+} from "@stellar/stellar-sdk";
 
 function toDisplaySafe(value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
@@ -79,6 +86,51 @@ export interface DecodedContractCreation {
   salt: string;
   /** Hex-encoded WASM hash of the uploaded executable. */
   wasmHash: string;
+  /** Operation-specific deployer, or null when it inherits the transaction source. */
+  deployerAccountId: string | null;
+}
+
+/** Source account of an operation, or null when it inherits the transaction source. */
+function operationSourceAccount(op: xdr.Operation): string | null {
+  try {
+    const source = op.sourceAccount();
+    if (!source) return null;
+    return encodeMuxedAccountToAddress(source);
+  } catch {
+    return null;
+  }
+}
+
+/** Ledger key for a contract's instance entry, used to look up its TTL. */
+export function contractInstanceLedgerKey(contractId: string): xdr.LedgerKey {
+  return xdr.LedgerKey.contractData(
+    new xdr.LedgerKeyContractData({
+      contract: Address.fromString(contractId).toScAddress(),
+      key: xdr.ScVal.scvLedgerKeyContractInstance(),
+      durability: xdr.ContractDataDurability.persistent(),
+    })
+  );
+}
+
+/**
+ * Expiration ledger of a contract instance entry from a getLedgerEntries
+ * response, or null when the entry is absent or carries no TTL.
+ */
+export function contractExpiresAtLedger(
+  response: rpc.Api.GetLedgerEntriesResponse,
+  contractId: string
+): number | null {
+  try {
+    const wanted = contractInstanceLedgerKey(contractId).toXDR("base64");
+    for (const entry of response.entries ?? []) {
+      if (entry.key.toXDR("base64") !== wanted) continue;
+      const liveUntil = entry.liveUntilLedgerSeq;
+      return typeof liveUntil === "number" && liveUntil > 0 ? liveUntil : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 export function decodeContractCreation(
@@ -90,6 +142,7 @@ export function decodeContractCreation(
     const tx = unwrapTx(envelope);
     let salt: string | null = null;
     let wasmHash: string | null = null;
+    let deployerAccountId: string | null = null;
     for (const op of tx.operations()) {
       if (op.body().switch().name !== "invokeHostFunction") continue;
       const hostFunction = op.body().invokeHostFunctionOp().hostFunction();
@@ -105,6 +158,7 @@ export function decodeContractCreation(
       } else {
         continue;
       }
+      deployerAccountId = operationSourceAccount(op);
       break;
     }
     if (salt === null || wasmHash === null) return null;
@@ -116,6 +170,7 @@ export function decodeContractCreation(
       creator,
       salt,
       wasmHash,
+      deployerAccountId,
     };
   } catch {
     return null;
@@ -135,6 +190,10 @@ function sorobanReturnValue(meta: xdr.TransactionMeta): xdr.ScVal | null {
 export interface DecodedStorageChange {
   contractId: string;
   durability: "persistent" | "temporary" | "instance";
+  // Position of the change within the transaction's meta. Together with the
+  // tx hash it identifies the row, so reprocessing a transaction after a
+  // restart maps onto the same rows instead of colliding on the natural key.
+  changeIndex: number;
   keyDisplay: string;
   valueDisplay: string | null;
   changeType: "created" | "updated" | "removed" | "state";
@@ -162,6 +221,7 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
         out.push({
           contractId: Address.fromScAddress(cd.contract()).toString(),
           durability: cd.durability().name as "persistent" | "temporary",
+          changeIndex: out.length,
           keyDisplay: scValToDisplay(cd.key()),
           valueDisplay: null,
           changeType: "removed",
@@ -188,13 +248,14 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
       const contractId = Address.fromScAddress(cd.contract()).toString();
 
       if (isInstanceKey) {
-        out.push(...expandInstanceEntry(contractId, cd.val(), changeType));
+        out.push(...expandInstanceEntry(contractId, cd.val(), changeType, out.length));
         continue;
       }
 
       out.push({
         contractId,
         durability: cd.durability().name as "persistent" | "temporary",
+        changeIndex: out.length,
         keyDisplay: scValToDisplay(cd.key()),
         valueDisplay: scValToDisplay(cd.val()),
         changeType,
@@ -213,7 +274,8 @@ export function extractStorageChanges(meta: xdr.TransactionMeta): DecodedStorage
 function expandInstanceEntry(
   contractId: string,
   val: xdr.ScVal,
-  changeType: DecodedStorageChange["changeType"]
+  changeType: DecodedStorageChange["changeType"],
+  startIndex: number
 ): DecodedStorageChange[] {
   if (val.switch().name !== "scvContractInstance") return [];
   const instance = val.instance();
@@ -224,6 +286,7 @@ function expandInstanceEntry(
     out.push({
       contractId,
       durability: "instance",
+      changeIndex: startIndex + out.length,
       keyDisplay: "__wasm_hash__",
       valueDisplay: executable.wasmHash().toString("hex"),
       changeType,
@@ -234,6 +297,7 @@ function expandInstanceEntry(
     out.push({
       contractId,
       durability: "instance",
+      changeIndex: startIndex + out.length,
       keyDisplay: scValToDisplay(entry.key()),
       valueDisplay: scValToDisplay(entry.val()),
       changeType,
@@ -243,12 +307,131 @@ function expandInstanceEntry(
   return out;
 }
 
+export interface DecodedInvocationStorageChange {
+  contractId: string;
+  durability: "persistent" | "temporary" | "instance";
+  key: string;
+  valueBefore: string | null;
+  valueAfter: string | null;
+}
+
+interface StorageEntrySnapshot {
+  contractId: string;
+  durability: DecodedInvocationStorageChange["durability"];
+  key: string;
+  value: string | null;
+}
+
+function storageEntrySnapshot(entry: xdr.LedgerEntry): StorageEntrySnapshot | null {
+  const data = entry.data();
+  if (data.switch().name !== "contractData") return null;
+  const cd = data.contractData();
+  const contractId = Address.fromScAddress(cd.contract()).toString();
+  if (cd.key().switch().name === "scvLedgerKeyContractInstance") {
+    return { contractId, durability: "instance", key: "__instance__", value: scValToDisplay(cd.val()) };
+  }
+  return {
+    contractId,
+    durability: cd.durability().name as "persistent" | "temporary",
+    key: scValToDisplay(cd.key()),
+    value: scValToDisplay(cd.val()),
+  };
+}
+
+function storageKeySnapshot(key: xdr.LedgerKey): StorageEntrySnapshot | null {
+  if (key.switch().name !== "contractData") return null;
+  const cd = key.contractData();
+  const contractId = Address.fromScAddress(cd.contract()).toString();
+  if (cd.key().switch().name === "scvLedgerKeyContractInstance") {
+    return { contractId, durability: "instance", key: "__instance__", value: null };
+  }
+  return {
+    contractId,
+    durability: cd.durability().name as "persistent" | "temporary",
+    key: scValToDisplay(cd.key()),
+    value: null,
+  };
+}
+
+/**
+ * Pair the before/after values of every contract storage entry an invocation
+ * touched. "Before" comes from the meta's ledgerEntryState changes, "after"
+ * from created/updated entries; a removed entry has no after value and a
+ * created entry has no before value. Entries whose value did not change are
+ * dropped, so the result is exactly the set of modified keys.
+ */
+export function extractInvocationStorageChanges(
+  meta: xdr.TransactionMeta
+): DecodedInvocationStorageChange[] {
+  const switchValue = meta.switch();
+  const v = switchValue === 4 ? meta.v4() : switchValue === 3 ? meta.v3() : null;
+  if (!v) return [];
+
+  const before = new Map<string, StorageEntrySnapshot>();
+  const after = new Map<string, StorageEntrySnapshot>();
+  const order: string[] = [];
+  const idOf = (s: StorageEntrySnapshot) => `${s.contractId}|${s.durability}|${s.key}`;
+  const track = (s: StorageEntrySnapshot) => {
+    const id = idOf(s);
+    if (!before.has(id) && !after.has(id)) order.push(id);
+  };
+
+  for (const opMeta of v.operations()) {
+    for (const change of opMeta.changes()) {
+      const kind = change.switch().name;
+      if (kind === "ledgerEntryState") {
+        const snapshot = storageEntrySnapshot(change.state());
+        if (!snapshot) continue;
+        track(snapshot);
+        before.set(idOf(snapshot), snapshot);
+        continue;
+      }
+      if (kind === "ledgerEntryRemoved") {
+        const snapshot = storageKeySnapshot(change.removed());
+        if (!snapshot) continue;
+        track(snapshot);
+        after.set(idOf(snapshot), snapshot);
+        continue;
+      }
+      if (kind !== "ledgerEntryCreated" && kind !== "ledgerEntryUpdated") continue;
+      const entry = kind === "ledgerEntryCreated" ? change.created() : change.updated();
+      const snapshot = storageEntrySnapshot(entry);
+      if (!snapshot) continue;
+      track(snapshot);
+      after.set(idOf(snapshot), snapshot);
+    }
+  }
+
+  const out: DecodedInvocationStorageChange[] = [];
+  for (const id of order) {
+    const b = before.get(id);
+    const a = after.get(id);
+    const valueBefore = b?.value ?? null;
+    const valueAfter = a?.value ?? null;
+    if (valueBefore === valueAfter) continue;
+    const base = (a ?? b)!;
+    out.push({
+      contractId: base.contractId,
+      durability: base.durability,
+      key: base.key,
+      valueBefore,
+      valueAfter,
+    });
+  }
+  return out;
+}
+
 export interface DecodedEvent {
   eventId: string;
+  eventIndex: number;
   contractId: string;
   type: string;
   topic: string[];
   value: string;
+  /** Raw event data, kept so token events can be decoded without re-parsing the meta. */
+  data?: xdr.ScVal;
+  /** Raw topics, kept so token events can read their addresses. */
+  rawTopics?: xdr.ScVal[];
   /** Set only for synthesized `contract_created` events. */
   deployer?: string;
   salt?: string;
@@ -266,6 +449,7 @@ export function contractCreatedEvent(
 ): DecodedEvent {
   return {
     eventId: `${txHash}-contract_created`,
+    eventIndex: -1,
     contractId: creation.contractId,
     type: "contract_created",
     topic: ["contract_created", creation.creator],
@@ -324,10 +508,93 @@ function decodeEvent(
   return [
     {
       eventId: `${txHash}-${opIndex}-${eventIndex}`,
+      eventIndex,
       contractId: StrKey.encodeContract(contractIdBuf),
       type: event.type().name,
       topic: body.topics().map(scValToDisplay),
       value: scValToDisplay(body.data()),
+      data: body.data(),
+      rawTopics: body.topics(),
     },
   ];
+}
+
+/** SEP-41 token event names, as they appear in the first topic. */
+export const TOKEN_EVENT_NAMES = ["transfer", "mint", "burn", "approve"] as const;
+export type TokenEventName = (typeof TOKEN_EVENT_NAMES)[number];
+
+export interface DecodedTokenEvent {
+  eventId: string;
+  tokenContractId: string;
+  eventType: TokenEventName;
+  /** Address the tokens came from; null for `mint`. */
+  from: string | null;
+  /** Address the tokens went to; null for `burn`. */
+  to: string | null;
+  /** Address approved to spend, for `approve`; null otherwise. */
+  spender: string | null;
+  /** Amount as a decimal string (i128/u128 don't fit a JS number). */
+  amount: string;
+  txHash: string;
+  ledger: number;
+}
+
+function addressFromScVal(val: xdr.ScVal | undefined): string | null {
+  if (!val || val.switch().name !== "scvAddress") return null;
+  try {
+    return Address.fromScAddress(val.address()).toString();
+  } catch {
+    return null;
+  }
+}
+
+function amountFromScVal(val: xdr.ScVal | undefined): string | null {
+  if (!val) return null;
+  try {
+    const native = scValToNative(val);
+    if (typeof native === "bigint") return native.toString();
+    if (typeof native === "number" || typeof native === "string") return String(native);
+  } catch {
+    // Fall through: not a plain numeric value.
+  }
+  return null;
+}
+
+/**
+ * Decode a SEP-41 token event (`transfer`, `mint`, `burn`, `approve`) from an
+ * already-extracted contract event. SEP-41 emits `(name, from, to, ...)` as
+ * topics and the amount as the data value; `mint` has no `from` and `burn` has
+ * no `to`. Returns null for any other event.
+ */
+export function decodeTokenEvent(
+  event: DecodedEvent,
+  txHash: string,
+  ledger: number
+): DecodedTokenEvent | null {
+  const name = event.topic[0];
+  if (!name || !(TOKEN_EVENT_NAMES as readonly string[]).includes(name)) return null;
+
+  const amount = amountFromScVal(event.data);
+  if (amount === null) return null;
+
+  const from = name === "mint" ? null : addressFromScVal(event.rawTopics?.[1]);
+  const to =
+    name === "mint"
+      ? addressFromScVal(event.rawTopics?.[1])
+      : name === "transfer"
+        ? addressFromScVal(event.rawTopics?.[2])
+        : null;
+
+  return {
+    eventId: event.eventId,
+    tokenContractId: event.contractId,
+    eventType: name as TokenEventName,
+    from,
+    to,
+    // `approve` topics are (approve, from, spender, live_until_ledger).
+    spender: name === "approve" ? addressFromScVal(event.rawTopics?.[2]) : null,
+    amount,
+    txHash,
+    ledger,
+  };
 }
